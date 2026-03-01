@@ -1,6 +1,6 @@
 [size=5][b]BooAPeek — Fixes AI Knowing about Concealed Player Units[/b][/size]
 
-[b]Version:[/b] 1.1.0 — [i]"Must have been the wind"[/i]
+[b]Version:[/b] 1.1.1 — [i]"Must have been the wind"[/i]
 [b]Author:[/b] YandrosTheSane
 
 [size=4][b]What It Does[/b][/size]
@@ -64,7 +64,7 @@ Use the [url=https://github.com/p0ss/MenaceAssetPacker/releases]MenaceAssetPacke
 
 [size=4][b]Current State & Known Limitations[/b][/size]
 
-[size=3][b]What v1.1.0 Does (Supposedly) Well[/b][/size]
+[size=3][b]What v1.1.1 Does (Supposedly) Well[/b][/size]
 
 (at the time of release I have played legitimately 5 full operations with the mods above and feel very confident about it being a better player experience)
 
@@ -78,7 +78,7 @@ Use the [url=https://github.com/p0ss/MenaceAssetPacker/releases]MenaceAssetPacke
 
 It's not yet satisfying but way better than before, no more herding.
 
-[size=3][b]What v1.1.0 Does NOT Do: Awareness Persistence[/b][/size]
+[size=3][b]What v1.1.1 Does NOT Do: Awareness Persistence[/b][/size]
 
 The current version is a [b]pure fog-of-war filter[/b] — binary visible/invisible, evaluated fresh each turn. The system has no built-in awareness persistence:
 
@@ -95,9 +95,10 @@ This means that once [b]all[/b] enemies in a faction lose line-of-sight, the fac
 Configurable via the in-game Modkit settings panel:
 
 [list]
-[*][b]Enabled[/b] (Default: On) — Master toggle for the fog of war fix
-[*][b]DebugLogging[/b] (Default: Off) — Logs actor counts and detailed init info
+[*][b]Debug Logging[/b] (Default: Off) — Logs actor counts and detailed init info
 [/list]
+
+The settings header shows the mod version (e.g. "BooAPeek v1.1.1") so you can verify which version is deployed.
 
 Log output always includes turn transitions and filtering results (e.g. "stripped 1 unseen opponent(s), kept 0").
 

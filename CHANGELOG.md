@@ -5,8 +5,10 @@
 ### Changed
 
 - Removed the Enabled toggle from settings (mod is always active when installed). Only Debug Logging remains as a setting.
-- Added release script and .gitignore for release artifacts.
-- Restructured README with complementary mod links and documentation.
+- Settings header now shows mod version (e.g. "BooAPeek v1.1.1") for easy deploy verification.
+- Added release script with zip output and .gitignore for release artifacts.
+- Restructured README with complementary mod links, updated file structure, and documentation.
+- Added BBCode README for Nexus, CHANGELOG, and media directory.
 
 ## v1.1.0 -- Opponent List Filtering
 

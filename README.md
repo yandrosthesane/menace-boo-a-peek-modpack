@@ -1,6 +1,6 @@
 # BooAPeek — Fixes AI Knowing about Concealed Player Units.
 
-**Version:** 1.1.0 — *"Must have been the wind"*
+**Version:** 1.1.1 — *"Must have been the wind"*
 **Author:** YandrosTheSane
 
 ## What It Does
@@ -55,7 +55,7 @@ Use the https://github.com/p0ss/MenaceAssetPacker/releases to deploy (build the 
 
 ## Current State & Known Limitations
 
-### "What v1.1.0 Does (Supposedly) Well
+### "What v1.1.1 Does (Supposedly) Well
 
 (at the time of release I have played legitimately 5 full operations with the mods above and feel very confident about it being a better player experience)
 
@@ -67,7 +67,7 @@ Use the https://github.com/p0ss/MenaceAssetPacker/releases to deploy (build the 
 
 It not yet satisfying but way better than before, no more herding.
 
-### What v1.1.0 Does NOT Do: Awareness Persistence
+### What v1.1.1 Does NOT Do: Awareness Persistence
 
 The current version is a **pure fog-of-war filter** — binary visible/invisible, evaluated fresh each turn. The system has no built-in awareness persistence:
 
@@ -131,10 +131,12 @@ BooAPeek-modpack/
 ├── modpack.json              # Mod metadata and load order
 ├── src/
 │   └── BooAPeekPlugin.cs     # Plugin source (IModpackPlugin)
-├── stats/
-│   └── EntityTemplate.json   # Test template patches (Concealment=3)
-├── AI_LEAK_ANALYSIS.md       # Full investigation with round-by-round evidence
-├── ab-test-maps.txt          # Test map notes
+├── docs/
+│   ├── AI_LEAK_ANALYSIS.md   # Full investigation with round-by-round evidence
+│   └── README.bbcode.txt     # BBCode version for Nexus
+├── media/                    # Screenshots for Nexus (not in release zip)
+├── CHANGELOG.md              # Version history
+├── release.sh                # Build release zip
 └── README.md                 # This file
 ```
 

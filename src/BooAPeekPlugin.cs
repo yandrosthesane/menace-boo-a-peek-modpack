@@ -15,13 +15,13 @@ public class BooAPeekPlugin : IModpackPlugin
     private int _initDelay;
 
     private const string MOD_NAME = "BooAPeek";
-    private const string MOD_VERSION = "1.1.1";
+    private const string MOD_VERSION = "1.2.0";
 
-    // Faction constants
-    private const int FACTION_PLAYER_1 = 1;
-    private const int FACTION_PLAYER_2 = 2;
-    private const int FACTION_AI_MIN = 3;
-    private const int FACTION_AI_MAX = 9;
+    // Faction discovery (populated at init, no hardcoded indices)
+    private const int FACTION_PROBE_MAX = 15;
+    private HashSet<int> _aiFactionIds = new HashSet<int>();
+    private HashSet<int> _alliedAiFactionIds = new HashSet<int>();
+    private List<int> _playerFactionIds = new List<int>();
 
     // Turn tracking
     private int _lastFactionId = -1;
@@ -40,6 +40,7 @@ public class BooAPeekPlugin : IModpackPlugin
     private MethodInfo _listAdd;         // List<Opponent>.Add(Opponent)
     private PropertyInfo _listCount;     // List<Opponent>.Count
     private PropertyInfo _listItem;      // List<Opponent>[int]
+    private MethodInfo _isAlliedWithPlayer; // AIFaction.get_m_IsAlliedWithPlayer
     private object _tmSingleton;
 
     // ═══════════════════════════════════════════════════════════════════
@@ -137,6 +138,7 @@ public class BooAPeekPlugin : IModpackPlugin
             _aiFactType = aiFactionGameType.ManagedType;
             _getOpponents = _aiFactType.GetMethod("get_m_Opponents");
             _setOpponents = _aiFactType.GetMethod("set_m_Opponents");
+            _isAlliedWithPlayer = _aiFactType.GetMethod("get_m_IsAlliedWithPlayer");
 
             // Opponent type
             var oppGameType = GameType.Find("Menace.Tactical.AI.Opponent");
@@ -144,19 +146,62 @@ public class BooAPeekPlugin : IModpackPlugin
             _oppActor = _oppType.GetProperty("Actor");
             _isKnown = _oppType.GetMethod("IsKnown");
 
-            // Get list type from a live faction to discover the correct generic List<Opponent>
-            var testFaction = GetAIFactionProxy(6); // pirates usually exist
-            if (testFaction != null)
+            // Discover factions dynamically — probe all indices, type-check each
+            _aiFactionIds.Clear();
+            _alliedAiFactionIds.Clear();
+            _playerFactionIds.Clear();
+
+            for (int i = 0; i <= FACTION_PROBE_MAX; i++)
             {
-                var testList = _getOpponents.Invoke(testFaction, null);
-                if (testList != null)
+                try
                 {
-                    var listType = testList.GetType();
-                    _listCtor = listType.GetConstructor(new Type[0]);
-                    _listAdd = listType.GetMethod("Add");
-                    _listCount = listType.GetProperty("Count");
-                    _listItem = listType.GetProperty("Item");
+                    var factionObj = _getFaction.Invoke(_tmSingleton, new object[] { i });
+                    if (factionObj == null) continue;
+
+                    // Type-check: is this actually an AIFaction (not a BaseFaction)?
+                    var factionPtr = ((Il2CppObjectBase)factionObj).Pointer;
+                    var factionGameObj = new GameObj(factionPtr);
+                    if (!factionGameObj.Is(aiFactionGameType))
+                    {
+                        // Non-AI faction with living actors → player-side
+                        var actors = EntitySpawner.ListEntities(i);
+                        if (actors != null && actors.Length > 0)
+                            _playerFactionIds.Add(i);
+                        continue;
+                    }
+
+                    // Confirmed AIFaction — construct managed proxy
+                    var proxy = GetAIFactionProxy(i);
+                    if (proxy == null) continue;
+
+                    // Check if this AI faction is allied with the player
+                    bool isAllied = false;
+                    if (_isAlliedWithPlayer != null)
+                    {
+                        try { isAllied = (bool)_isAlliedWithPlayer.Invoke(proxy, null); }
+                        catch { }
+                    }
+
+                    if (isAllied)
+                        _alliedAiFactionIds.Add(i);
+                    else
+                        _aiFactionIds.Add(i);
+
+                    // Discover List<Opponent> type from first faction with an opponents list
+                    if (_listCtor == null)
+                    {
+                        var opps = _getOpponents.Invoke(proxy, null);
+                        if (opps != null)
+                        {
+                            var listType = opps.GetType();
+                            _listCtor = listType.GetConstructor(new Type[0]);
+                            _listAdd = listType.GetMethod("Add");
+                            _listCount = listType.GetProperty("Count");
+                            _listItem = listType.GetProperty("Item");
+                        }
+                    }
                 }
+                catch { }
             }
 
             _reflectionReady = _tmSingleton != null && _getFaction != null &&
@@ -165,7 +210,10 @@ public class BooAPeekPlugin : IModpackPlugin
                                _listCtor != null && _listAdd != null;
 
             if (_reflectionReady)
-                Log.Msg("BooAPeek — Reflection cache ready");
+            {
+                Log.Msg($"BooAPeek — Reflection cache ready");
+                LogFactionDiscovery();
+            }
             else
                 Log.Warning("BooAPeek — Reflection cache incomplete, fog of war disabled");
         }
@@ -220,9 +268,8 @@ public class BooAPeekPlugin : IModpackPlugin
             _lastFactionId = currentFaction;
             _lastRound = currentRound;
 
-            // Apply fog of war on AI faction turn start
-            if (_reflectionReady &&
-                currentFaction >= FACTION_AI_MIN && currentFaction <= FACTION_AI_MAX)
+            // Apply fog of war on hostile AI faction turn start
+            if (_reflectionReady && _aiFactionIds.Contains(currentFaction))
             {
                 FilterOpponents(currentFaction);
             }
@@ -335,16 +382,13 @@ public class BooAPeekPlugin : IModpackPlugin
         var result = new List<GameObj>();
         try
         {
-            var actors1 = EntitySpawner.ListEntities(FACTION_PLAYER_1);
-            var actors2 = EntitySpawner.ListEntities(FACTION_PLAYER_2);
-
-            if (actors1 != null)
-                foreach (var a in actors1)
+            foreach (int factionId in _playerFactionIds)
+            {
+                var actors = EntitySpawner.ListEntities(factionId);
+                if (actors == null) continue;
+                foreach (var a in actors)
                     if (!a.IsNull && a.IsAlive) result.Add(a);
-
-            if (actors2 != null)
-                foreach (var a in actors2)
-                    if (!a.IsNull && a.IsAlive) result.Add(a);
+            }
         }
         catch (Exception ex)
         {
@@ -356,6 +400,28 @@ public class BooAPeekPlugin : IModpackPlugin
     // ═══════════════════════════════════════════════════════════════════
     //  Debug Logging
     // ═══════════════════════════════════════════════════════════════════
+
+    private void LogFactionDiscovery()
+    {
+        foreach (int id in _aiFactionIds)
+        {
+            string name = TacticalController.GetFactionName((FactionType)id);
+            int count = GetLivingActorsForFaction(id).Count;
+            Log.Msg($"[BooAPeek]   Hostile AI: {name} (faction {id}) — {count} unit(s) — filtering ACTIVE");
+        }
+        foreach (int id in _alliedAiFactionIds)
+        {
+            string name = TacticalController.GetFactionName((FactionType)id);
+            int count = GetLivingActorsForFaction(id).Count;
+            Log.Msg($"[BooAPeek]   Allied AI:  {name} (faction {id}) — {count} unit(s) — filtering SKIPPED");
+        }
+        foreach (int id in _playerFactionIds)
+        {
+            string name = TacticalController.GetFactionName((FactionType)id);
+            int count = GetLivingActorsForFaction(id).Count;
+            Log.Msg($"[BooAPeek]   Player:     {name} (faction {id}) — {count} unit(s)");
+        }
+    }
 
     private void LogActorSummary()
     {
@@ -377,13 +443,13 @@ public class BooAPeekPlugin : IModpackPlugin
                     continue;
 
                 int faction = actor.ReadInt("m_FactionID");
-                if (faction == FACTION_PLAYER_1 || faction == FACTION_PLAYER_2)
-                    playerCount++;
-                else
+                if (_aiFactionIds.Contains(faction))
                     enemyCount++;
+                else
+                    playerCount++;
             }
 
-            Log.Msg($"[BooAPeek] Actors: {playerCount} player, {enemyCount} enemy");
+            Log.Msg($"[BooAPeek] Actors: {playerCount} player/allied, {enemyCount} hostile AI");
         }
         catch (Exception ex)
         {

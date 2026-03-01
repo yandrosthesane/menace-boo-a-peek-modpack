@@ -1,6 +1,6 @@
 # BooAPeek — Fixes AI Knowing about Concealed Player Units.
 
-**Version:** 1.1.1 — *"Must have been the wind"*
+**Version:** 1.2.0 — *"Who Goes There?"*
 **Author:** YandrosTheSane
 
 ## What It Does
@@ -46,6 +46,20 @@ Result:
   AI reacts to concealed units it has never seen
 ```
 
+## Changelog
+
+### v1.2.0 -- Who Goes There?
+
+Factions are now discovered at runtime instead of hardcoded. Allied AI factions (Civilian, Allied Local Forces) are correctly skipped — v1.1.x incorrectly stripped their opponents too. [Design notes & analysis](https://github.com/yandrosthesane/menace-boo-a-peek-modpack/blob/main/docs/v1.2.0_better_filtering.md)
+
+### v1.1.1 -- Housekeeping
+
+Settings cleanup, release tooling, documentation.
+
+### v1.1.0 -- Opponent List Filtering
+
+Core fog-of-war fix: on each AI faction's turn, filters `m_Opponents` to only include player units visible to at least one living enemy in that faction. Pure binary filter — no awareness persistence, no TTL decay, no last-known-position. [Investigation & analysis](https://github.com/yandrosthesane/menace-boo-a-peek-modpack/blob/main/docs/v1.1.1_AI_LEAK_ANALYSIS.md)
+
 ## Complementary mods
 - [Wake Up ~ By Pylkij](https://www.nexusmods.com/menace/mods/36)
 - [PeekABoo ~ By YandrosTheSane](https://www.nexusmods.com/menace/mods/69)
@@ -55,7 +69,7 @@ Use the https://github.com/p0ss/MenaceAssetPacker/releases to deploy (build the 
 
 ## Current State & Known Limitations
 
-### "What v1.1.1 Does (Supposedly) Well
+### What v1.2.0 Does (Supposedly) Well
 
 (at the time of release I have played legitimately 5 full operations with the mods above and feel very confident about it being a better player experience)
 
@@ -67,7 +81,7 @@ Use the https://github.com/p0ss/MenaceAssetPacker/releases to deploy (build the 
 
 It not yet satisfying but way better than before, no more herding.
 
-### What v1.1.1 Does NOT Do: Awareness Persistence
+### What v1.2.0 Does NOT Do: Awareness Persistence
 
 The current version is a **pure fog-of-war filter** — binary visible/invisible, evaluated fresh each turn. The system has no built-in awareness persistence:
 
@@ -90,7 +104,7 @@ Log output always includes turn transitions and filtering results (e.g. `"stripp
 
 ## Investigation & Testing
 
-Tested with a concealed player unit (Concealment=3) against 26 pirates across 12 rounds, using live REPL inspection of AI state at each turn boundary. Full round-by-round data, position tables, and architecture notes in [AI_LEAK_ANALYSIS.md](docs/AI_LEAK_ANALYSIS.md).
+Tested with a concealed player unit (Concealment=3) against 26 pirates across 12 rounds, using live REPL inspection of AI state at each turn boundary. Full round-by-round data, position tables, and architecture notes in [v1.1.1_AI_LEAK_ANALYSIS.md](docs/v1.1.1_AI_LEAK_ANALYSIS.md).
 
 ### Confirming the Leak
 
@@ -117,11 +131,11 @@ Three runtime approaches were tested before arriving at the list swap:
 
 ## Technical Details
 
-- **Turn detection:** Polls `TacticalController.GetCurrentFaction()` each frame; triggers on faction transitions for AI factions (indices 3–9)
+- **Turn detection:** Polls `TacticalController.GetCurrentFaction()` each frame; triggers on faction transitions for dynamically discovered hostile AI factions
 - **Reflection cache:** All type lookups, method handles, and constructors are resolved once on scene load (60-frame delay for scene init), then reused every turn with zero allocation overhead
 - **LOS checks:** Uses `LineOfSight.CanActorSee(enemy, playerUnit)` — the same function the game uses internally
 - **Actor enumeration:** `EntitySpawner.ListEntities(factionIdx)` for faction-specific living actors
-- **Faction filtering:** Only processes AI factions (indices 3–9); player (1–2) and neutral (0) are skipped
+- **Faction discovery:** Probes factions 0–15 at init, classifies each as hostile AI (filtered), allied AI (skipped), or player (LOS source) using `GameObj.Is()` type-checking and `AIFaction.m_IsAlliedWithPlayer`
 - **Scene lifecycle:** State fully reset on scene transitions; reflection cache invalidated when leaving tactical
 
 ## File Structure
@@ -132,8 +146,9 @@ BooAPeek-modpack/
 ├── src/
 │   └── BooAPeekPlugin.cs     # Plugin source (IModpackPlugin)
 ├── docs/
-│   ├── AI_LEAK_ANALYSIS.md   # Full investigation with round-by-round evidence
-│   └── README.bbcode.txt     # BBCode version for Nexus
+│   ├── v1.1.1_AI_LEAK_ANALYSIS.md   # Full investigation with round-by-round evidence
+│   ├── v1.2.0_better_filtering.md   # Dynamic faction discovery design notes
+│   └── README.bbcode.txt            # BBCode version for Nexus
 ├── media/                    # Screenshots for Nexus (not in release zip)
 ├── CHANGELOG.md              # Version history
 ├── release.sh                # Build release zip

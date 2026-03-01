@@ -1,6 +1,6 @@
 [size=5][b]BooAPeek — Fixes AI Knowing about Concealed Player Units[/b][/size]
 
-[b]Version:[/b] 1.1.1 — [i]"Must have been the wind"[/i]
+[b]Version:[/b] 1.2.0 — [i]"Who Goes There?"[/i]
 [b]Author:[/b] YandrosTheSane
 
 [size=4][b]What It Does[/b][/size]
@@ -47,6 +47,17 @@ Result:
   AI reacts to concealed units it has never seen
 [/code]
 
+[size=4][b]Changelog[/b][/size]
+
+[size=3][b]v1.2.0 -- Who Goes There?[/b][/size]
+Factions are now discovered at runtime instead of hardcoded. Allied AI factions (Civilian, Allied Local Forces) are correctly skipped — v1.1.x incorrectly stripped their opponents too. [url=https://github.com/yandrosthesane/menace-boo-a-peek-modpack/blob/main/docs/v1.2.0_better_filtering.md]Design notes & analysis[/url]
+
+[size=3][b]v1.1.1 -- Housekeeping[/b][/size]
+Settings cleanup, release tooling, documentation.
+
+[size=3][b]v1.1.0 -- Opponent List Filtering[/b][/size]
+Core fog-of-war fix: on each AI faction's turn, filters the opponent list to only include player units visible to at least one living enemy in that faction. Pure binary filter — no awareness persistence, no TTL decay, no last-known-position. [url=https://github.com/yandrosthesane/menace-boo-a-peek-modpack/blob/main/docs/v1.1.1_AI_LEAK_ANALYSIS.md]Investigation & analysis[/url]
+
 [size=4][b]Complementary Mods[/b][/size]
 
 [list]
@@ -64,7 +75,7 @@ Use the [url=https://github.com/p0ss/MenaceAssetPacker/releases]MenaceAssetPacke
 
 [size=4][b]Current State & Known Limitations[/b][/size]
 
-[size=3][b]What v1.1.1 Does (Supposedly) Well[/b][/size]
+[size=3][b]What v1.2.0 Does (Supposedly) Well[/b][/size]
 
 (at the time of release I have played legitimately 5 full operations with the mods above and feel very confident about it being a better player experience)
 
@@ -78,7 +89,7 @@ Use the [url=https://github.com/p0ss/MenaceAssetPacker/releases]MenaceAssetPacke
 
 It's not yet satisfying but way better than before, no more herding.
 
-[size=3][b]What v1.1.1 Does NOT Do: Awareness Persistence[/b][/size]
+[size=3][b]What v1.2.0 Does NOT Do: Awareness Persistence[/b][/size]
 
 The current version is a [b]pure fog-of-war filter[/b] — binary visible/invisible, evaluated fresh each turn. The system has no built-in awareness persistence:
 
@@ -98,7 +109,7 @@ Configurable via the in-game Modkit settings panel:
 [*][b]Debug Logging[/b] (Default: Off) — Logs actor counts and detailed init info
 [/list]
 
-The settings header shows the mod version (e.g. "BooAPeek v1.1.1") so you can verify which version is deployed.
+The settings header shows the mod version (e.g. "BooAPeek v1.2.0") so you can verify which version is deployed.
 
 Log output always includes turn transitions and filtering results (e.g. "stripped 1 unseen opponent(s), kept 0").
 

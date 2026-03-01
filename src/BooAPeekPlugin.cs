@@ -15,6 +15,7 @@ public class BooAPeekPlugin : IModpackPlugin
     private int _initDelay;
 
     private const string MOD_NAME = "BooAPeek";
+    private const string MOD_VERSION = "1.1.1";
 
     // Faction constants
     private const int FACTION_PLAYER_1 = 1;
@@ -49,7 +50,7 @@ public class BooAPeekPlugin : IModpackPlugin
     {
         Log = logger;
         RegisterSettings();
-        Log.Msg("BooAPeek v1.1.0 initialized");
+        Log.Msg($"BooAPeek v{MOD_VERSION} initialized");
     }
 
     public void OnSceneLoaded(int buildIndex, string sceneName)
@@ -83,7 +84,7 @@ public class BooAPeekPlugin : IModpackPlugin
     {
         ModSettings.Register(MOD_NAME, settings =>
         {
-            settings.AddHeader("Debug");
+            settings.AddHeader($"BooAPeek v{MOD_VERSION}");
             settings.AddToggle("DebugLogging", "Debug Logging", false);
         });
     }

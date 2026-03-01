@@ -6,7 +6,7 @@ cd "$SCRIPT_DIR"
 
 MOD_NAME=$(jq -r '.name' modpack.json)
 VERSION=$(jq -r '.version' modpack.json)
-RELEASE_DIR="release/${MOD_NAME}-modpack-v${VERSION}"
+RELEASE_DIR="release/${MOD_NAME}"
 
 rm -rf "$RELEASE_DIR"
 mkdir -p "$RELEASE_DIR"
@@ -17,4 +17,8 @@ cp README.md "$RELEASE_DIR/"
 cp -r src "$RELEASE_DIR/"
 cp -r docs "$RELEASE_DIR/"
 
-echo "${MOD_NAME} v${VERSION} → ${RELEASE_DIR}/"
+ZIP_FILE="release/${MOD_NAME}-modpack-v${VERSION}.zip"
+rm -f "$ZIP_FILE"
+(cd release && zip -r "../${ZIP_FILE}" "${MOD_NAME}/")
+
+echo "${MOD_NAME} v${VERSION} → ${ZIP_FILE}"

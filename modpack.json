@@ -1,0 +1,25 @@
+{
+  "manifestVersion": 2,
+  "name": "BooAPeek",
+  "version": "1.1.0",
+  "author": "YandrosTheSane",
+  "description": "Prevents AI from considering concealed player units it has never spotted. Complement to PeekABoo.",
+  "loadOrder": 101,
+  "patches": {},
+  "assets": {},
+  "code": {
+    "sources": [
+      "src/BooAPeekPlugin.cs"
+    ],
+    "references": [
+      "MelonLoader",
+      "0Harmony",
+      "Il2CppInterop.Runtime",
+      "Il2Cppmscorlib",
+      "Assembly-CSharp",
+      "Menace.ModpackLoader"
+    ],
+    "prebuiltDlls": []
+  },
+  "securityStatus": "SourceVerified"
+}

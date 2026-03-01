@@ -77,16 +77,12 @@ public class BooAPeekPlugin : IModpackPlugin
     //  Settings
     // ═══════════════════════════════════════════════════════════════════
 
-    private static bool Enabled => ModSettings.Get<bool>(MOD_NAME, "Enabled");
     private static bool DebugLogging => ModSettings.Get<bool>(MOD_NAME, "DebugLogging");
 
     private void RegisterSettings()
     {
         ModSettings.Register(MOD_NAME, settings =>
         {
-            settings.AddHeader("AI Fog of War");
-            settings.AddToggle("Enabled", "Enable BooAPeek", true);
-
             settings.AddHeader("Debug");
             settings.AddToggle("DebugLogging", "Debug Logging", false);
         });
@@ -98,7 +94,7 @@ public class BooAPeekPlugin : IModpackPlugin
 
     public void OnUpdate()
     {
-        if (!_inTactical || !Enabled)
+        if (!_inTactical)
             return;
 
         if (_initDelay > 0)

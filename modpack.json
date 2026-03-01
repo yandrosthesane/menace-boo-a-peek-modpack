@@ -1,7 +1,7 @@
 {
   "manifestVersion": 2,
   "name": "BooAPeek",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "author": "YandrosTheSane",
   "description": "Prevents AI from considering concealed player units it has never spotted. Complement to PeekABoo.",
   "loadOrder": 101,

@@ -1,11 +1,12 @@
-# BooAPeek — AI Experimental Fix to Stealth Behaviour
+# BooAPeek — Fixes AI Knowing about Concealed Player Units.
 
 **Version:** 1.1.0 — *"Must have been the wind"*
 **Author:** YandrosTheSane
 
 ## What It Does
 
-BooAPeek tries to fix a fundamental AI information leak in Menace's tactical combat. Without this mod, the AI knows the exact real-time position of all player units — even concealed ones it has never seen — and uses that knowledge to flee, take cover, and position optimally against invisible threats.
+BooAPeek tries to fix a fundamental AI information leak in Menace's tactical combat. 
+Without this mod, the AI knows the exact real-time position of all player units — even concealed ones it has never seen — and uses that knowledge to flee, take cover, and position optimally against invisible threats.
 
 ## The Problem
 
@@ -46,15 +47,11 @@ Result:
 ```
 
 ## Complementary mods
-- https://www.nexusmods.com/menace/mods/36
-- https://www.nexusmods.com/menace/mods/69
+- [Wake Up ~ By Pylkij](https://www.nexusmods.com/menace/mods/36)
+- [PeekABoo ~ By YandrosTheSane](https://www.nexusmods.com/menace/mods/69)
 
-With those 3 mods (AI is active, You don't get free intel, They don't get free intel) you can get into situation like this in one turn. 
-
-Later down the road there will be a need for rebalance.
-
-![img.png](img.png)
-
+## Installation
+Use the https://github.com/p0ss/MenaceAssetPacker/releases to deploy (build the sources) and activate the mod.
 
 ## Current State & Known Limitations
 
@@ -87,8 +84,7 @@ Configurable via the in-game Modkit settings panel:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| **Enabled** | On | Master toggle for the fog of war fix |
-| **DebugLogging** | Off | Logs actor counts and detailed init info |
+| **Debug Logging** | Off | Logs actor counts and detailed init info |
 
 Log output always includes turn transitions and filtering results (e.g. `"stripped 1 unseen opponent(s), kept 0"`).
 

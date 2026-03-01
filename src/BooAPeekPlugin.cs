@@ -1,47 +1,59 @@
 using System;
 using System.Collections.Generic;
-using System.Reflection;
+using HarmonyLib;
 using MelonLoader;
 using Menace.ModpackLoader;
 using Menace.SDK;
-using Il2CppInterop.Runtime.InteropTypes;
+using Il2CppInterop.Runtime;
+using Il2CppMenace.Tactical;
+using Il2CppMenace.Tactical.AI;
 
 namespace Menace.BooAPeek;
 
 public class BooAPeekPlugin : IModpackPlugin
 {
-    private static MelonLogger.Instance Log;
+    internal static MelonLogger.Instance Log;
+    internal static BooAPeekPlugin Instance;
+
+    private HarmonyLib.Harmony _harmony;
     private bool _inTactical;
     private int _initDelay;
+    private bool _ready;
 
     private const string MOD_NAME = "BooAPeek";
-    private const string MOD_VERSION = "1.2.0";
-
-    // Faction discovery (populated at init, no hardcoded indices)
+    private const string MOD_VERSION = "2.1.0";
     private const int FACTION_PROBE_MAX = 15;
-    private HashSet<int> _aiFactionIds = new HashSet<int>();
-    private HashSet<int> _alliedAiFactionIds = new HashSet<int>();
-    private List<int> _playerFactionIds = new List<int>();
 
-    // Turn tracking
-    private int _lastFactionId = -1;
-    private int _lastRound = -1;
+    // Per-faction awareness tracking
+    private Dictionary<int, FactionAwareness> _awareness = new();
 
-    // Reflection cache (initialized once per tactical scene)
-    private bool _reflectionReady;
-    private Type _aiFactType;
-    private Type _oppType;
-    private MethodInfo _getOpponents;
-    private MethodInfo _setOpponents;
-    private MethodInfo _getFaction;
-    private PropertyInfo _oppActor;
-    private MethodInfo _isKnown;
-    private ConstructorInfo _listCtor;   // List<Opponent>() parameterless
-    private MethodInfo _listAdd;         // List<Opponent>.Add(Opponent)
-    private PropertyInfo _listCount;     // List<Opponent>.Count
-    private PropertyInfo _listItem;      // List<Opponent>[int]
-    private MethodInfo _isAlliedWithPlayer; // AIFaction.get_m_IsAlliedWithPlayer
-    private object _tmSingleton;
+    // Per-faction spread calibration (for auto-scaling ghost bonus)
+    private Dictionary<int, float> _observedMax = new();
+    private Dictionary<int, float> _observedMin = new();
+    private Dictionary<int, float> _calibratedSpread = new();
+
+    private class GhostMemory
+    {
+        public int TargetX, TargetZ;     // Last-seen player position
+        public int WaypointX, WaypointZ; // Current waypoint (between AI and target)
+        public int RoundsRemaining;
+        public float Priority;
+    }
+
+    private class FactionAwareness
+    {
+        // Actor pointer → last-seen tile coordinates (updated while visible)
+        public Dictionary<IntPtr, (int x, int z)> LastSeen = new();
+        // Actor pointer → ghost pursuit state (created on LOS break)
+        public Dictionary<IntPtr, GhostMemory> Ghosts = new();
+        // Tracks whether ghosts were already updated this game round
+        public bool GhostsUpdatedThisRound;
+    }
+
+    // Faction classification (discovered per mission)
+    internal HashSet<int> HostileAiFactions = new();
+    internal HashSet<int> AlliedAiFactions = new();
+    internal List<int> PlayerFactions = new();
 
     // ═══════════════════════════════════════════════════════════════════
     //  Plugin Lifecycle
@@ -50,8 +62,13 @@ public class BooAPeekPlugin : IModpackPlugin
     public void OnInitialize(MelonLogger.Instance logger, HarmonyLib.Harmony harmony)
     {
         Log = logger;
+        Instance = this;
+        _harmony = harmony;
+
         RegisterSettings();
-        Log.Msg($"BooAPeek v{MOD_VERSION} initialized");
+        _harmony.PatchAll(typeof(BooAPeekPlugin).Assembly);
+
+        Log.Msg($"BooAPeek v{MOD_VERSION} initialized (Harmony patches applied)");
     }
 
     public void OnSceneLoaded(int buildIndex, string sceneName)
@@ -60,9 +77,11 @@ public class BooAPeekPlugin : IModpackPlugin
         {
             _inTactical = true;
             _initDelay = 60;
-            _lastFactionId = -1;
-            _lastRound = -1;
-            _reflectionReady = false;
+            _ready = false;
+            _awareness.Clear();
+            _observedMax.Clear();
+            _observedMin.Clear();
+            _calibratedSpread.Clear();
             Log.Msg("BooAPeek — Tactical scene loaded, waiting for init...");
         }
         else
@@ -70,33 +89,17 @@ public class BooAPeekPlugin : IModpackPlugin
             if (_inTactical)
                 Log.Msg($"BooAPeek — Left tactical (now: {sceneName})");
             _inTactical = false;
-            _reflectionReady = false;
-            _tmSingleton = null;
+            _ready = false;
+            _awareness.Clear();
+            _observedMax.Clear();
+            _observedMin.Clear();
+            _calibratedSpread.Clear();
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    //  Settings
-    // ═══════════════════════════════════════════════════════════════════
-
-    private static bool DebugLogging => ModSettings.Get<bool>(MOD_NAME, "DebugLogging");
-
-    private void RegisterSettings()
-    {
-        ModSettings.Register(MOD_NAME, settings =>
-        {
-            settings.AddHeader($"BooAPeek v{MOD_VERSION}");
-            settings.AddToggle("DebugLogging", "Debug Logging", false);
-        });
-    }
-
-    // ═══════════════════════════════════════════════════════════════════
-    //  Main Loop
-    // ═══════════════════════════════════════════════════════════════════
-
     public void OnUpdate()
     {
-        if (!_inTactical)
+        if (!_inTactical || _ready)
             return;
 
         if (_initDelay > 0)
@@ -104,253 +107,433 @@ public class BooAPeekPlugin : IModpackPlugin
             _initDelay--;
             if (_initDelay == 0)
             {
-                InitReflectionCache();
+                DiscoverFactions();
                 if (DebugLogging)
-                {
-                    Log.Msg("BooAPeek — Init complete");
                     LogActorSummary();
-                }
             }
-            return;
         }
-
-        DetectTurnTransitions();
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    //  Reflection Cache
-    // ═══════════════════════════════════════════════════════════════════
+    internal bool IsReady => _ready;
 
-    private void InitReflectionCache()
+    /// <summary>
+    /// Called from ConsiderZones.Evaluate postfix — directly boosts tile utility for ghost targets.
+    /// Returns the score bonus for a tile at (tileX, tileZ) for the given faction.
+    /// </summary>
+    internal float GetGhostScoreBonus(int factionIdx, int tileX, int tileZ)
+    {
+        if (!_awareness.TryGetValue(factionIdx, out var awareness)) return 0f;
+        if (awareness.Ghosts.Count == 0) return 0f;
+
+        float bonus = 0f;
+        int zoneSize = GhostZoneSize;
+        foreach (var kvp in awareness.Ghosts)
+        {
+            var ghost = kvp.Value;
+            int half = zoneSize / 2;
+            // Check if tile is inside the ghost's waypoint zone area
+            if (tileX >= ghost.WaypointX - half && tileX <= ghost.WaypointX + half &&
+                tileZ >= ghost.WaypointZ - half && tileZ <= ghost.WaypointZ + half)
+            {
+                bonus += ghost.Priority;
+            }
+        }
+        return bonus;
+    }
+
+    /// <summary>
+    /// Called from OnTurnStart postfix — updates ghost waypoints once per round.
+    /// No longer creates Zone objects; just computes waypoint positions for score injection.
+    /// </summary>
+    internal void UpdateGhostWaypoints(AIFaction aiFaction)
     {
         try
         {
-            // TacticalManager singleton
-            var tmGameType = GameType.Find("Menace.Tactical.TacticalManager");
-            var tmManagedType = tmGameType.ManagedType;
-            var singletonProp = tmManagedType.GetProperty("s_Singleton",
-                BindingFlags.Public | BindingFlags.Static);
-            _tmSingleton = singletonProp.GetValue(null);
-            _getFaction = tmManagedType.GetMethod("GetFaction", new[] { typeof(int) });
+            int factionIdx = aiFaction.GetIndex();
+            if (!_awareness.TryGetValue(factionIdx, out var awareness)) return;
+            if (awareness.GhostsUpdatedThisRound || awareness.Ghosts.Count == 0) return;
 
-            // AIFaction type
-            var aiFactionGameType = GameType.Find("Menace.Tactical.AI.AIFaction");
-            _aiFactType = aiFactionGameType.ManagedType;
-            _getOpponents = _aiFactType.GetMethod("get_m_Opponents");
-            _setOpponents = _aiFactType.GetMethod("set_m_Opponents");
-            _isAlliedWithPlayer = _aiFactType.GetMethod("get_m_IsAlliedWithPlayer");
+            awareness.GhostsUpdatedThisRound = true;
+            var factionEnemies = GetLivingActorsForFaction(factionIdx);
 
-            // Opponent type
-            var oppGameType = GameType.Find("Menace.Tactical.AI.Opponent");
-            _oppType = oppGameType.ManagedType;
-            _oppActor = _oppType.GetProperty("Actor");
-            _isKnown = _oppType.GetMethod("IsKnown");
+            var expired = new List<IntPtr>();
+            foreach (var kvp in awareness.Ghosts)
+            {
+                var ghost = kvp.Value;
+                ghost.RoundsRemaining--;
+                if (ghost.RoundsRemaining <= 0)
+                {
+                    expired.Add(kvp.Key);
+                    Log.Msg($"[BooAPeek] Ghost expired at ({ghost.TargetX},{ghost.TargetZ})");
+                    continue;
+                }
 
-            // Discover factions dynamically — probe all indices, type-check each
-            _aiFactionIds.Clear();
-            _alliedAiFactionIds.Clear();
-            _playerFactionIds.Clear();
+                // Find nearest AI unit to the target
+                int nearestX = ghost.TargetX, nearestZ = ghost.TargetZ;
+                float nearestDist = float.MaxValue;
+                foreach (var enemy in factionEnemies)
+                {
+                    try
+                    {
+                        var entity = new Entity(enemy.Pointer);
+                        var tile = entity.GetTile();
+                        if (tile == null) continue;
+                        int ex = tile.GetX(), ez = tile.GetZ();
+                        float dx = ghost.TargetX - ex, dz = ghost.TargetZ - ez;
+                        float dist = (float)Math.Sqrt(dx * dx + dz * dz);
+                        if (dist < nearestDist)
+                        {
+                            nearestDist = dist;
+                            nearestX = ex;
+                            nearestZ = ez;
+                        }
+                    }
+                    catch { }
+                }
+
+                // Compute waypoint toward target
+                if (nearestDist <= GhostWaypointDist)
+                {
+                    ghost.WaypointX = ghost.TargetX;
+                    ghost.WaypointZ = ghost.TargetZ;
+                }
+                else
+                {
+                    float ratio = GhostWaypointDist / nearestDist;
+                    ghost.WaypointX = nearestX + (int)((ghost.TargetX - nearestX) * ratio);
+                    ghost.WaypointZ = nearestZ + (int)((ghost.TargetZ - nearestZ) * ratio);
+                }
+
+                // Decay priority for next round
+                ghost.Priority *= GhostDecay;
+
+                Log.Msg($"[BooAPeek] Ghost waypoint at ({ghost.WaypointX},{ghost.WaypointZ}) priority {ghost.Priority:F1}, {ghost.RoundsRemaining} rounds left, nearest AI at ({nearestX},{nearestZ}) dist {nearestDist:F0}");
+            }
+
+            foreach (var ptr in expired)
+            {
+                awareness.Ghosts.Remove(ptr);
+                awareness.LastSeen.Remove(ptr);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"[BooAPeek] UpdateGhostWaypoints error: {ex.Message}");
+        }
+    }
+
+    internal int GetGhostCount(int factionIdx)
+    {
+        return _awareness.TryGetValue(factionIdx, out var a) ? a.Ghosts.Count : 0;
+    }
+
+    internal void ResetRoundFlag(int factionIdx)
+    {
+        if (_awareness.TryGetValue(factionIdx, out var awareness))
+            awareness.GhostsUpdatedThisRound = false;
+
+        // Snapshot this round's observed spread for next round's calibration
+        float max = _observedMax.GetValueOrDefault(factionIdx, 0f);
+        float min = _observedMin.GetValueOrDefault(factionIdx, 0f);
+        float spread = max > min ? max - min : 0f;
+        _calibratedSpread[factionIdx] = spread;
+
+        // Reset for next round's observations
+        _observedMax[factionIdx] = float.MinValue;
+        _observedMin[factionIdx] = float.MaxValue;
+
+        if (DebugLogging && spread > 0f)
+            Log.Msg($"[BooAPeek] Round spread snapshot: faction {factionIdx} spread={spread:F1} (max={max:F1}, min={min:F1})");
+    }
+
+    /// <summary>
+    /// Track game's UtilityScore for a tile (before our ghost bonus).
+    /// Updates per-faction min/max for spread calibration.
+    /// </summary>
+    internal void TrackTileScore(int factionIdx, float gameUtility)
+    {
+        if (gameUtility > _observedMax.GetValueOrDefault(factionIdx, float.MinValue))
+            _observedMax[factionIdx] = gameUtility;
+        if (gameUtility < _observedMin.GetValueOrDefault(factionIdx, float.MaxValue))
+            _observedMin[factionIdx] = gameUtility;
+    }
+
+    /// <summary>
+    /// Returns the spread-scaled ghost bonus for a tile, or 0 if not in a ghost zone.
+    /// </summary>
+    internal float GetCalibratedGhostBonus(int factionIdx, int tileX, int tileZ)
+    {
+        float rawBonus = GetGhostScoreBonus(factionIdx, tileX, tileZ);
+        if (rawBonus <= 0f) return 0f;
+
+        float spread = _calibratedSpread.GetValueOrDefault(factionIdx, 0f);
+        float scaledBonus = Math.Max(GhostMinFloor, spread * GhostFraction);
+        float decayFactor = rawBonus / GhostInitialPriority;
+        return scaledBonus * decayFactor;
+    }
+
+    /// <summary>
+    /// Called from SetTile patch when any entity changes tile.
+    /// If a player unit moved into hostile AI vision, record the sighting.
+    /// </summary>
+    internal void OnEntityTileChanged(Entity entity)
+    {
+        try
+        {
+            int entityFaction = entity.GetFactionID();
+            if (!PlayerFactions.Contains(entityFaction)) return;
+
+            var tile = entity.GetTile();
+            if (tile == null) return;
+            int x = tile.GetX(), z = tile.GetZ();
+
+            var playerObj = new GameObj(entity.Pointer);
+
+            foreach (int hostileFaction in HostileAiFactions)
+            {
+                var enemies = GetLivingActorsForFaction(hostileFaction);
+                bool seen = false;
+                foreach (var enemy in enemies)
+                {
+                    if (LineOfSight.CanActorSee(enemy, playerObj))
+                    {
+                        seen = true;
+                        break;
+                    }
+                }
+
+                if (seen)
+                {
+                    if (!_awareness.TryGetValue(hostileFaction, out var awareness))
+                    {
+                        awareness = new FactionAwareness();
+                        _awareness[hostileFaction] = awareness;
+                    }
+                    var prev = awareness.LastSeen.ContainsKey(entity.Pointer);
+                    awareness.LastSeen[entity.Pointer] = (x, z);
+                    if (!prev)
+                        Log.Msg($"[BooAPeek] Player unit spotted mid-move at ({x},{z}) by faction {hostileFaction}");
+                }
+            }
+        }
+        catch { }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  Settings
+    // ═══════════════════════════════════════════════════════════════════
+
+    internal static bool DebugLogging => ModSettings.Get<bool>(MOD_NAME, "DebugLogging");
+    internal static int GhostZoneSize => ModSettings.Get<int>(MOD_NAME, "GhostZoneSize");
+    internal static float GhostInitialPriority => ModSettings.Get<float>(MOD_NAME, "GhostInitialPriority");
+    internal static float GhostDecay => ModSettings.Get<float>(MOD_NAME, "GhostDecay");
+    internal static int GhostMaxRounds => ModSettings.Get<int>(MOD_NAME, "GhostMaxRounds");
+    internal static int GhostWaypointDist => ModSettings.Get<int>(MOD_NAME, "GhostWaypointDist");
+    internal static float GhostFraction => ModSettings.Get<float>(MOD_NAME, "GhostFraction");
+    internal static float GhostMinFloor => ModSettings.Get<float>(MOD_NAME, "GhostMinFloor");
+    internal static int DebugLogLimit => ModSettings.Get<int>(MOD_NAME, "DebugLogLimit");
+
+    private void RegisterSettings()
+    {
+        ModSettings.Register(MOD_NAME, settings =>
+        {
+            settings.AddHeader($"BooAPeek v{MOD_VERSION}");
+            settings.AddToggle("DebugLogging", "Debug Logging", false);
+            settings.AddHeader("Ghost Awareness");
+            settings.AddNumber("GhostZoneSize", "Zone Size (tiles)", 1, 11, 5);
+            settings.AddSlider("GhostInitialPriority", "Initial Priority", 1f, 100f, 20f);
+            settings.AddSlider("GhostDecay", "Decay Per Round", 0.1f, 1f, 0.5f);
+            settings.AddNumber("GhostMaxRounds", "Max Rounds", 1, 10, 3);
+            settings.AddNumber("GhostWaypointDist", "Waypoint Distance", 1, 20, 6);
+            settings.AddHeader("Auto-Calibration");
+            settings.AddSlider("GhostFraction", "Spread Fraction", 0.05f, 1f, 0.33f);
+            settings.AddSlider("GhostMinFloor", "Minimum Bonus", 0.5f, 50f, 5f);
+            settings.AddHeader("Diagnostics");
+            settings.AddNumber("DebugLogLimit", "Log Lines Per Actor", 1, 50, 5);
+        });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  Faction Discovery (direct Il2Cpp types, no reflection)
+    // ═══════════════════════════════════════════════════════════════════
+
+    private void DiscoverFactions()
+    {
+        try
+        {
+            var tm = TacticalManager.s_Singleton;
+            if (tm == null)
+            {
+                Log.Warning("BooAPeek — TacticalManager singleton is null");
+                return;
+            }
+
+            HostileAiFactions.Clear();
+            AlliedAiFactions.Clear();
+            PlayerFactions.Clear();
 
             for (int i = 0; i <= FACTION_PROBE_MAX; i++)
             {
                 try
                 {
-                    var factionObj = _getFaction.Invoke(_tmSingleton, new object[] { i });
-                    if (factionObj == null) continue;
+                    var baseFaction = tm.GetFaction(i);
+                    if (baseFaction == null) continue;
 
-                    // Type-check: is this actually an AIFaction (not a BaseFaction)?
-                    var factionPtr = ((Il2CppObjectBase)factionObj).Pointer;
-                    var factionGameObj = new GameObj(factionPtr);
-                    if (!factionGameObj.Is(aiFactionGameType))
+                    var aiFaction = baseFaction.TryCast<AIFaction>();
+                    if (aiFaction == null)
                     {
-                        // Non-AI faction with living actors → player-side
+                        // Non-AI faction — check if it has living actors (player side)
                         var actors = EntitySpawner.ListEntities(i);
                         if (actors != null && actors.Length > 0)
-                            _playerFactionIds.Add(i);
+                            PlayerFactions.Add(i);
                         continue;
                     }
 
-                    // Confirmed AIFaction — construct managed proxy
-                    var proxy = GetAIFactionProxy(i);
-                    if (proxy == null) continue;
-
-                    // Check if this AI faction is allied with the player
-                    bool isAllied = false;
-                    if (_isAlliedWithPlayer != null)
-                    {
-                        try { isAllied = (bool)_isAlliedWithPlayer.Invoke(proxy, null); }
-                        catch { }
-                    }
-
-                    if (isAllied)
-                        _alliedAiFactionIds.Add(i);
+                    if (aiFaction.m_IsAlliedWithPlayer)
+                        AlliedAiFactions.Add(i);
                     else
-                        _aiFactionIds.Add(i);
-
-                    // Discover List<Opponent> type from first faction with an opponents list
-                    if (_listCtor == null)
-                    {
-                        var opps = _getOpponents.Invoke(proxy, null);
-                        if (opps != null)
-                        {
-                            var listType = opps.GetType();
-                            _listCtor = listType.GetConstructor(new Type[0]);
-                            _listAdd = listType.GetMethod("Add");
-                            _listCount = listType.GetProperty("Count");
-                            _listItem = listType.GetProperty("Item");
-                        }
-                    }
+                        HostileAiFactions.Add(i);
                 }
                 catch { }
             }
 
-            _reflectionReady = _tmSingleton != null && _getFaction != null &&
-                               _getOpponents != null && _setOpponents != null &&
-                               _oppActor != null && _isKnown != null &&
-                               _listCtor != null && _listAdd != null;
+            _ready = HostileAiFactions.Count > 0;
 
-            if (_reflectionReady)
+            if (_ready)
             {
-                Log.Msg($"BooAPeek — Reflection cache ready");
+                Log.Msg("BooAPeek — Faction discovery complete");
                 LogFactionDiscovery();
             }
             else
-                Log.Warning("BooAPeek — Reflection cache incomplete, fog of war disabled");
+                Log.Warning("BooAPeek — No hostile AI factions found, fog of war disabled");
         }
         catch (Exception ex)
         {
-            Log.Error($"BooAPeek — Reflection init failed: {ex.Message}");
-            _reflectionReady = false;
+            Log.Error($"BooAPeek — Faction discovery failed: {ex.Message}");
+            _ready = false;
         }
     }
 
-    private object GetAIFactionProxy(int factionIdx)
+    // ═══════════════════════════════════════════════════════════════════
+    //  Opponent Filtering (called from Harmony patch)
+    // ═══════════════════════════════════════════════════════════════════
+
+    internal void FilterOpponents(AIFaction aiFaction)
     {
         try
         {
-            var factionObj = _getFaction.Invoke(_tmSingleton, new object[] { factionIdx });
-            if (factionObj == null) return null;
+            var opponents = aiFaction.m_Opponents;
+            if (opponents == null || opponents.Count == 0) return;
 
-            var ptrCtor = _aiFactType.GetConstructor(new[] { typeof(IntPtr) });
-            return ptrCtor.Invoke(new object[] { ((Il2CppObjectBase)factionObj).Pointer });
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════
-    //  Turn Detection + Fog of War
-    // ═══════════════════════════════════════════════════════════════════
-
-    private void DetectTurnTransitions()
-    {
-        int currentFaction = TacticalController.GetCurrentFaction();
-        int currentRound = TacticalController.GetCurrentRound();
-
-        if (currentFaction < 0)
-            return;
-
-        bool factionChanged = currentFaction != _lastFactionId;
-        bool roundChanged = currentRound != _lastRound;
-
-        if (factionChanged || roundChanged)
-        {
-            // Always log turn transitions for validation
-            if (roundChanged && currentRound > _lastRound)
-                Log.Msg($"[BooAPeek] === Round {currentRound} ===");
-
-            var factionType = (FactionType)currentFaction;
-            string factionName = TacticalController.GetFactionName(factionType);
-            Log.Msg($"[BooAPeek] Turn: {factionName} (faction {currentFaction})");
-
-            _lastFactionId = currentFaction;
-            _lastRound = currentRound;
-
-            // Apply fog of war on hostile AI faction turn start
-            if (_reflectionReady && _aiFactionIds.Contains(currentFaction))
-            {
-                FilterOpponents(currentFaction);
-            }
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════
-    //  Fog of War — Opponent Filtering
-    // ═══════════════════════════════════════════════════════════════════
-
-    private void FilterOpponents(int factionIdx)
-    {
-        try
-        {
-            var aiFaction = GetAIFactionProxy(factionIdx);
-            if (aiFaction == null) return;
-
-            var currentList = _getOpponents.Invoke(aiFaction, null);
-            if (currentList == null) return;
-
-            int count = (int)_listCount.GetValue(currentList);
-            if (count == 0) return;
-
+            int factionIdx = aiFaction.GetIndex();
             var factionEnemies = GetLivingActorsForFaction(factionIdx);
-            if (factionEnemies.Count == 0)
-                return;
+            if (factionEnemies.Count == 0) return;
 
-            var filteredList = _listCtor.Invoke(null);
-            int kept = 0;
-            int stripped = 0;
-
-            for (int i = 0; i < count; i++)
+            if (!_awareness.TryGetValue(factionIdx, out var awareness))
             {
-                var opponent = _listItem.GetValue(currentList, new object[] { i });
+                awareness = new FactionAwareness();
+                _awareness[factionIdx] = awareness;
+            }
+
+            var filtered = new Il2CppSystem.Collections.Generic.List<Opponent>();
+            int kept = 0, stripped = 0, ghostsCreated = 0, ghostsRemoved = 0;
+
+            for (int i = 0; i < opponents.Count; i++)
+            {
+                var opponent = opponents[i];
                 if (opponent == null) continue;
 
-                var actorManaged = _oppActor.GetValue(opponent);
-                if (actorManaged == null) continue;
+                var actor = opponent.Actor;
+                if (actor == null) continue;
 
-                var actorPtr = ((Il2CppObjectBase)actorManaged).Pointer;
-                if (actorPtr == IntPtr.Zero) continue;
-
-                var actorGameObj = new GameObj(actorPtr);
-
+                var targetObj = new GameObj(actor.Pointer);
                 bool isVisible = false;
+
                 foreach (var enemy in factionEnemies)
                 {
-                    if (LineOfSight.CanActorSee(enemy, actorGameObj))
+                    if (LineOfSight.CanActorSee(enemy, targetObj))
                     {
                         isVisible = true;
                         break;
                     }
                 }
 
+                // Only track awareness for player faction opponents
+                bool isPlayerUnit = false;
+                try
+                {
+                    var actorEntity = new Entity(actor.Pointer);
+                    int actorFaction = actorEntity.GetFactionID();
+                    isPlayerUnit = PlayerFactions.Contains(actorFaction);
+                }
+                catch { }
+
                 if (isVisible)
                 {
-                    _listAdd.Invoke(filteredList, new object[] { opponent });
+                    filtered.Add(opponent);
                     kept++;
+
+                    if (isPlayerUnit)
+                    {
+                        // Record current position — snapshot for ghost zone if LOS breaks later
+                        var entity = new Entity(actor.Pointer);
+                        var tile = entity.GetTile();
+                        if (tile != null)
+                            awareness.LastSeen[actor.Pointer] = (tile.GetX(), tile.GetZ());
+
+                        // If re-sighted while ghost active, cancel the pursuit
+                        if (awareness.Ghosts.TryGetValue(actor.Pointer, out var ghost))
+                        {
+                            awareness.Ghosts.Remove(actor.Pointer);
+                            ghostsRemoved++;
+                            Log.Msg($"[BooAPeek] Ghost cancelled — player re-sighted");
+                        }
+                    }
                 }
                 else
                 {
                     stripped++;
+
+                    // Player unit lost LOS — start ghost pursuit if we have a last-known position
+                    if (isPlayerUnit
+                        && awareness.LastSeen.TryGetValue(actor.Pointer, out var lastPos)
+                        && !awareness.Ghosts.ContainsKey(actor.Pointer))
+                    {
+                        float initPriority = GhostInitialPriority;
+                        int maxRounds = GhostMaxRounds;
+                        awareness.Ghosts[actor.Pointer] = new GhostMemory
+                        {
+                            TargetX = lastPos.x,
+                            TargetZ = lastPos.z,
+                            WaypointX = lastPos.x,
+                            WaypointZ = lastPos.z,
+                            RoundsRemaining = maxRounds,
+                            Priority = initPriority
+                        };
+                        ghostsCreated++;
+                        Log.Msg($"[BooAPeek] Ghost pursuit started → target ({lastPos.x},{lastPos.z}), priority {initPriority}, {maxRounds} rounds");
+                    }
                 }
             }
 
             if (stripped > 0)
             {
-                _setOpponents.Invoke(aiFaction, new object[] { filteredList });
-                string factionName = TacticalController.GetFactionName((FactionType)factionIdx);
-                Log.Msg($"[BooAPeek] {factionName}: stripped {stripped} unseen opponent(s), kept {kept}");
+                aiFaction.m_Opponents = filtered;
+                string factionName = TacticalController.GetFactionName((Menace.SDK.FactionType)factionIdx);
+                Log.Msg($"[BooAPeek] {factionName}: stripped {stripped}, kept {kept}, ghosts +{ghostsCreated}/-{ghostsRemoved} (active: {awareness.Ghosts.Count})");
             }
-            else
+            else if (DebugLogging)
             {
-                Log.Msg($"[BooAPeek] Faction {factionIdx}: all {kept} opponent(s) visible, no filtering needed");
+                Log.Msg($"[BooAPeek] Faction {factionIdx}: all {kept} opponent(s) visible");
             }
         }
         catch (Exception ex)
         {
-            Log.Error($"[BooAPeek] FilterOpponents(f{factionIdx}) error: {ex.Message}");
+            Log.Error($"[BooAPeek] FilterOpponents error: {ex.Message}\n{ex.StackTrace}");
         }
     }
+
+    // Old UpdateGhostZones removed — replaced by UpdateGhostWaypoints + direct score injection
 
     // ═══════════════════════════════════════════════════════════════════
     //  Actor Enumeration
@@ -363,36 +546,12 @@ public class BooAPeekPlugin : IModpackPlugin
         {
             var actors = EntitySpawner.ListEntities(factionIdx);
             if (actors == null) return result;
-
             foreach (var actor in actors)
-            {
-                if (!actor.IsNull && actor.IsAlive)
-                    result.Add(actor);
-            }
+                if (!actor.IsNull && actor.IsAlive) result.Add(actor);
         }
         catch (Exception ex)
         {
             Log.Error($"[BooAPeek] GetLivingActorsForFaction error: {ex.Message}");
-        }
-        return result;
-    }
-
-    private List<GameObj> GetLivingPlayerUnits()
-    {
-        var result = new List<GameObj>();
-        try
-        {
-            foreach (int factionId in _playerFactionIds)
-            {
-                var actors = EntitySpawner.ListEntities(factionId);
-                if (actors == null) continue;
-                foreach (var a in actors)
-                    if (!a.IsNull && a.IsAlive) result.Add(a);
-            }
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"[BooAPeek] GetLivingPlayerUnits error: {ex.Message}");
         }
         return result;
     }
@@ -403,21 +562,21 @@ public class BooAPeekPlugin : IModpackPlugin
 
     private void LogFactionDiscovery()
     {
-        foreach (int id in _aiFactionIds)
+        foreach (int id in HostileAiFactions)
         {
-            string name = TacticalController.GetFactionName((FactionType)id);
+            string name = TacticalController.GetFactionName((Menace.SDK.FactionType)id);
             int count = GetLivingActorsForFaction(id).Count;
             Log.Msg($"[BooAPeek]   Hostile AI: {name} (faction {id}) — {count} unit(s) — filtering ACTIVE");
         }
-        foreach (int id in _alliedAiFactionIds)
+        foreach (int id in AlliedAiFactions)
         {
-            string name = TacticalController.GetFactionName((FactionType)id);
+            string name = TacticalController.GetFactionName((Menace.SDK.FactionType)id);
             int count = GetLivingActorsForFaction(id).Count;
             Log.Msg($"[BooAPeek]   Allied AI:  {name} (faction {id}) — {count} unit(s) — filtering SKIPPED");
         }
-        foreach (int id in _playerFactionIds)
+        foreach (int id in PlayerFactions)
         {
-            string name = TacticalController.GetFactionName((FactionType)id);
+            string name = TacticalController.GetFactionName((Menace.SDK.FactionType)id);
             int count = GetLivingActorsForFaction(id).Count;
             Log.Msg($"[BooAPeek]   Player:     {name} (faction {id}) — {count} unit(s)");
         }
@@ -434,26 +593,172 @@ public class BooAPeekPlugin : IModpackPlugin
                 return;
             }
 
-            int playerCount = 0;
-            int enemyCount = 0;
-
+            int playerCount = 0, enemyCount = 0;
             foreach (var actor in actors)
             {
-                if (actor.IsNull || !actor.IsAlive)
-                    continue;
-
+                if (actor.IsNull || !actor.IsAlive) continue;
                 int faction = actor.ReadInt("m_FactionID");
-                if (_aiFactionIds.Contains(faction))
-                    enemyCount++;
-                else
-                    playerCount++;
+                if (HostileAiFactions.Contains(faction)) enemyCount++;
+                else playerCount++;
             }
-
             Log.Msg($"[BooAPeek] Actors: {playerCount} player/allied, {enemyCount} hostile AI");
         }
         catch (Exception ex)
         {
             Log.Error($"[BooAPeek] LogActorSummary error: {ex.Message}");
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Harmony Patches — fire before AI thinks, guaranteed timing
+// ═══════════════════════════════════════════════════════════════════
+
+[HarmonyPatch(typeof(AIFaction), nameof(AIFaction.OnTurnStart))]
+static class Patch_AIFaction_OnTurnStart
+{
+    static void Prefix(AIFaction __instance)
+    {
+        try
+        {
+            var plugin = BooAPeekPlugin.Instance;
+            if (plugin == null || !plugin.IsReady) return;
+
+            int factionIdx = __instance.GetIndex();
+            if (!plugin.HostileAiFactions.Contains(factionIdx)) return;
+
+            plugin.FilterOpponents(__instance);
+        }
+        catch (Exception ex)
+        {
+            BooAPeekPlugin.Log.Error($"[BooAPeek] OnTurnStart error: {ex.Message}");
+        }
+    }
+
+    static void Postfix(AIFaction __instance)
+    {
+        try
+        {
+            var plugin = BooAPeekPlugin.Instance;
+            if (plugin == null || !plugin.IsReady) return;
+
+            int factionIdx = __instance.GetIndex();
+            if (!plugin.HostileAiFactions.Contains(factionIdx)) return;
+
+            plugin.UpdateGhostWaypoints(__instance);
+        }
+        catch { }
+    }
+}
+
+[HarmonyPatch(typeof(AIFaction), nameof(AIFaction.OnRoundStart))]
+static class Patch_AIFaction_OnRoundStart
+{
+    static void Prefix(AIFaction __instance)
+    {
+        try
+        {
+            var plugin = BooAPeekPlugin.Instance;
+            if (plugin == null || !plugin.IsReady) return;
+
+            int factionIdx = __instance.GetIndex();
+            if (!plugin.HostileAiFactions.Contains(factionIdx)) return;
+
+            plugin.ResetRoundFlag(factionIdx);
+        }
+        catch { }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Mid-movement sighting: record LOS when player unit changes tile
+// ═══════════════════════════════════════════════════════════════════
+
+[HarmonyPatch(typeof(Entity), nameof(Entity.SetTile))]
+static class Patch_Entity_SetTile
+{
+    static void Postfix(Entity __instance)
+    {
+        try
+        {
+            var plugin = BooAPeekPlugin.Instance;
+            if (plugin == null || !plugin.IsReady) return;
+            plugin.OnEntityTileChanged(__instance);
+        }
+        catch { }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Ghost score injection via ConsiderZones criterion (spread-based)
+// ═══════════════════════════════════════════════════════════════════
+
+[HarmonyPatch(typeof(Il2CppMenace.Tactical.AI.Behaviors.Criterions.ConsiderZones), nameof(Il2CppMenace.Tactical.AI.Behaviors.Criterions.ConsiderZones.Evaluate))]
+static class Patch_ConsiderZones_Evaluate
+{
+    static int _callCount = 0;
+    static int _ghostHits = 0;
+    static int _factionId = -1;
+    static IntPtr _lastActor = IntPtr.Zero;
+
+    static void Postfix(Actor _actor, Il2CppMenace.Tactical.AI.Data.TileScore _tile)
+    {
+        var plugin = BooAPeekPlugin.Instance;
+        if (plugin == null || !plugin.IsReady) return;
+
+        // Reset per-actor state
+        if (_actor.Pointer != _lastActor)
+        {
+            // Log summary for previous actor
+            if (_lastActor != IntPtr.Zero && BooAPeekPlugin.DebugLogging && _callCount > 0)
+                BooAPeekPlugin.Log.Msg($"[BooAPeek][SCORES] faction {_factionId}: {_callCount} tiles, {_ghostHits} ghost hits");
+
+            _lastActor = _actor.Pointer;
+            _callCount = 0;
+            _ghostHits = 0;
+
+            try
+            {
+                var entity = new Entity(_actor.Pointer);
+                _factionId = entity.GetFactionID();
+            }
+            catch { _factionId = -1; }
+
+            if (BooAPeekPlugin.DebugLogging)
+            {
+                try
+                {
+                    var e = new Entity(_actor.Pointer);
+                    var t = e.GetTile();
+                    int ax = t != null ? t.GetX() : -1, az = t != null ? t.GetZ() : -1;
+                    BooAPeekPlugin.Log.Msg($"[BooAPeek][DIAG] Actor at ({ax},{az}) faction {_factionId}, ghosts active: {plugin.GetGhostCount(_factionId)}");
+                }
+                catch { }
+            }
+        }
+        _callCount++;
+
+        if (_factionId < 0) return;
+
+        try
+        {
+            var tile = _tile.Tile;
+            if (tile == null) return;
+
+            // Track game's UtilityScore for spread calibration (before our bonus)
+            plugin.TrackTileScore(_factionId, _tile.UtilityScore);
+
+            // Apply spread-calibrated ghost bonus
+            float ghostBonus = plugin.GetCalibratedGhostBonus(_factionId, tile.GetX(), tile.GetZ());
+            if (ghostBonus > 0f)
+            {
+                _tile.UtilityScore += ghostBonus;
+                _ghostHits++;
+
+                if (BooAPeekPlugin.DebugLogging && _ghostHits <= BooAPeekPlugin.DebugLogLimit)
+                    BooAPeekPlugin.Log.Msg($"[BooAPeek][GHOST] Tile ({tile.GetX()},{tile.GetZ()}): bonus +{ghostBonus:F1}, total Utility={_tile.UtilityScore:F2}");
+            }
+        }
+        catch { }
     }
 }

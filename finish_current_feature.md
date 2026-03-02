@@ -95,15 +95,57 @@ Round 1 of a new mission uses MIN_FLOOR (no previous data). Round 2+ auto-calibr
 
 ### Open Question
 
-Spread stability between rounds is unverified. Zone positions are constant, but the evaluated tile set shifts as units move. MIN_FLOOR (5.0) provides a safety net if spread collapses. If testing shows instability, consider EMA smoothing: `smoothedSpread = 0.7 * prev + 0.3 * observed`.
+Spread stability between rounds is unverified. Zone positions are constant, but the evaluated tile set shifts as units move. MIN_FLOOR provides a safety net if spread collapses. If testing shows instability, consider EMA smoothing: `smoothedSpread = 0.7 * prev + 0.3 * observed`.
+
+## Test Results (2026-03-02)
+
+### Kill Mission Score Landscape (no zones, wildlife vs 1 player unit)
+
+**TileScore fields observed in ConsiderZones.Evaluate postfix:**
+
+| Score field | Observed range | Notes |
+|-------------|---------------|-------|
+| UtilityScore | 0.0–48.1 | Driven by ThreatFromOpponents (proximity to visible player) |
+| SafetyScore | 0.0–24.9 | Only non-zero on tiles with VIS flag (visible to opponents) |
+| DistanceScore | 0.0 | Always 0 at ConsiderZones stage — set later by DistanceToCurrentTile |
+
+**Score tiers for tiles near the player (at ~27,20):**
+
+| Tile type | UtilityScore | SafetyScore | Notes |
+|-----------|-------------|-------------|-------|
+| Adjacent to player | 48.1 | 0.0 | Strongest attraction |
+| Near player + visible | 28.9 | 24.9 | VIS flag set |
+| Mid-range to player | 16.4 | 1.8 | VIS flag set |
+| Moderate range | 11.7 | 0.0 | Just ThreatFromOpponents |
+| No target in range | 0.0 | 0.0 | Far-away actors |
+
+**Ghost zone tiles (waypoint at 32,22):**
+
+| Bonus | Total UtilityScore | Competes with |
+|-------|-------------------|---------------|
+| +20.0 (GhostMinFloor) | 20.0 | Mid-range player tiles (11.7–16.4) |
+| +20.0 (GhostMinFloor) | 20.0 | Loses to close-range player (28.9–48.1) |
+
+### Bugs Found and Fixed
+
+1. **Unwanted first-round decay:** Ghost created with Priority=20 in FilterOpponents (Prefix), then immediately decayed to 10 in UpdateGhostWaypoints (Postfix) — BEFORE ConsiderZones ever evaluates. Fix: pre-multiply initial priority by `1/GhostDecay` so after decay it lands on `GhostInitialPriority`.
+
+2. **GhostMinFloor too low:** Default 5.0 produced only +2.5 bonus (after decay bug). Even fixed to 5.0, not enough to influence AI. Bumped default to 20.0 — confirmed working: wildlife moves 4–5 tiles toward ghost zone.
+
+3. **Calibration vs flat bonus A/B test:** Flat +20 works. Calibrated +2.5 (5.0 floor × 0.5 decay) does not. The auto-calibration approach is sound but needs the floor to be meaningful relative to ThreatFromOpponents scores.
+
+### Key Insight
+
+GhostMinFloor=20 is the right ballpark for kill missions. It competes with mid-range player attraction (11.7–16.4) but correctly loses to close-range scores (28.9–48.1). This means the AI will investigate the ghost zone UNLESS it has a better visible target — which is exactly the desired behavior.
 
 ## Cleanup for Release
 
-- [ ] Gate `[DIAG]`, `[SCORES]`, `[GHOST]` logging behind `DebugLogging` setting
+- [ ] Gate `[DIAG]`, `[SCORES]`, `[TOP]` logging behind `DebugLogging` setting
 - [ ] Remove `UnityEngine.CoreModule` from `modpack.json`
 - [ ] Version bump `modpack.json` → `2.1.0`
 - [ ] Update `README.md` — awareness persistence section
 - [ ] Update `CHANGELOG.md` — v2.1.0 entry
+- [ ] Test on a mission WITH zones to verify spread calibration
 
 ## Files to Modify
 
@@ -117,7 +159,7 @@ Spread stability between rounds is unverified. Zone positions are constant, but 
 ## Verification
 
 1. `/deploy BooAPeek` → compile succeeds
-2. **Kill mission (no zones):** Peek + retreat → AI nudged toward ghost (spread ≈ 0, bonus = MIN_FLOOR = 5.0). Check `[SCORES]` log confirms spread ≈ 0 and bonus = 5.0.
+2. **Kill mission (no zones):** Peek + retreat → AI nudged toward ghost (spread ≈ 0, bonus = MIN_FLOOR = 20.0). Check `[SCORES]` log confirms ghost hits and wildlife movement. **DONE — confirmed working.**
 3. **Mission with objectives:** Peek + retreat near migration path → check `[SCORES]` log for spread value. AI investigates ghost without abandoning migration. Ghost bonus should be ~33% of spread.
 4. **Spread stability:** Observe `[SCORES]` spread values across 3+ rounds — verify they stay in same order of magnitude.
 5. **Ghost expiry:** Wait 3 rounds → decay factor drops (1.0 → 0.5 → 0.25) → AI resumes normal behavior.

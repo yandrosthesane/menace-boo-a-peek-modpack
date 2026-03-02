@@ -347,7 +347,7 @@ public class BooAPeekPlugin : IModpackPlugin
             settings.AddNumber("GhostWaypointDist", "Waypoint Distance", 1, 20, 6);
             settings.AddHeader("Auto-Calibration");
             settings.AddSlider("GhostFraction", "Spread Fraction", 0.05f, 1f, 0.33f);
-            settings.AddSlider("GhostMinFloor", "Minimum Bonus", 0.5f, 50f, 5f);
+            settings.AddSlider("GhostMinFloor", "Minimum Bonus", 0.5f, 50f, 20f);
             settings.AddHeader("Diagnostics");
             settings.AddNumber("DebugLogLimit", "Log Lines Per Actor", 1, 50, 5);
         });
@@ -499,7 +499,9 @@ public class BooAPeekPlugin : IModpackPlugin
                         && awareness.LastSeen.TryGetValue(actor.Pointer, out var lastPos)
                         && !awareness.Ghosts.ContainsKey(actor.Pointer))
                     {
-                        float initPriority = GhostInitialPriority;
+                        // Pre-multiply to compensate for the immediate decay in UpdateGhostWaypoints
+                        // (which runs in the same OnTurnStart Postfix before ConsiderZones evaluates)
+                        float initPriority = GhostInitialPriority / GhostDecay;
                         int maxRounds = GhostMaxRounds;
                         awareness.Ghosts[actor.Pointer] = new GhostMemory
                         {
@@ -701,6 +703,38 @@ static class Patch_ConsiderZones_Evaluate
     static int _factionId = -1;
     static IntPtr _lastActor = IntPtr.Zero;
 
+    // Per-actor score tracking for diagnostics
+    static float _minUtility = float.MaxValue, _maxUtility = float.MinValue;
+    static float _minSafety = float.MaxValue, _maxSafety = float.MinValue;
+    static float _minDistance = float.MaxValue, _maxDistance = float.MinValue;
+
+    struct TileInfo
+    {
+        public int X, Z;
+        public float Utility, Safety, Distance, GhostBonus;
+        public bool Visible;
+    }
+    static List<TileInfo> _topTiles = new();
+    const int TOP_N = 5;
+
+    static void LogActorSummary()
+    {
+        if (_lastActor == IntPtr.Zero || !BooAPeekPlugin.DebugLogging || _callCount == 0) return;
+
+        BooAPeekPlugin.Log.Msg($"[BooAPeek][SCORES] faction {_factionId}: {_callCount} tiles, {_ghostHits} ghost hits | Util=[{_minUtility:F1},{_maxUtility:F1}] Safe=[{_minSafety:F1},{_maxSafety:F1}] Dist=[{_minDistance:F1},{_maxDistance:F1}]");
+
+        // Log top tiles sorted by utility descending
+        _topTiles.Sort((a, b) => b.Utility.CompareTo(a.Utility));
+        int limit = Math.Min(_topTiles.Count, TOP_N);
+        for (int i = 0; i < limit; i++)
+        {
+            var t = _topTiles[i];
+            string ghost = t.GhostBonus > 0 ? $" ghost=+{t.GhostBonus:F1}" : "";
+            string vis = t.Visible ? " VIS" : "";
+            BooAPeekPlugin.Log.Msg($"[BooAPeek][TOP{i + 1}] ({t.X},{t.Z}) util={t.Utility:F1} safe={t.Safety:F1} dist={t.Distance:F1}{ghost}{vis}");
+        }
+    }
+
     static void Postfix(Actor _actor, Il2CppMenace.Tactical.AI.Data.TileScore _tile)
     {
         var plugin = BooAPeekPlugin.Instance;
@@ -709,13 +743,15 @@ static class Patch_ConsiderZones_Evaluate
         // Reset per-actor state
         if (_actor.Pointer != _lastActor)
         {
-            // Log summary for previous actor
-            if (_lastActor != IntPtr.Zero && BooAPeekPlugin.DebugLogging && _callCount > 0)
-                BooAPeekPlugin.Log.Msg($"[BooAPeek][SCORES] faction {_factionId}: {_callCount} tiles, {_ghostHits} ghost hits");
+            LogActorSummary();
 
             _lastActor = _actor.Pointer;
             _callCount = 0;
             _ghostHits = 0;
+            _minUtility = float.MaxValue; _maxUtility = float.MinValue;
+            _minSafety = float.MaxValue; _maxSafety = float.MinValue;
+            _minDistance = float.MaxValue; _maxDistance = float.MinValue;
+            _topTiles.Clear();
 
             try
             {
@@ -745,18 +781,66 @@ static class Patch_ConsiderZones_Evaluate
             var tile = _tile.Tile;
             if (tile == null) return;
 
+            int tileX = tile.GetX(), tileZ = tile.GetZ();
+            float utilBefore = _tile.UtilityScore;
+            float safety = _tile.SafetyScore;
+            float distance = _tile.DistanceScore;
+
+            // Track ranges
+            if (utilBefore > _maxUtility) _maxUtility = utilBefore;
+            if (utilBefore < _minUtility) _minUtility = utilBefore;
+            if (safety > _maxSafety) _maxSafety = safety;
+            if (safety < _minSafety) _minSafety = safety;
+            if (distance > _maxDistance) _maxDistance = distance;
+            if (distance < _minDistance) _minDistance = distance;
+
             // Track game's UtilityScore for spread calibration (before our bonus)
-            plugin.TrackTileScore(_factionId, _tile.UtilityScore);
+            plugin.TrackTileScore(_factionId, utilBefore);
 
             // Apply spread-calibrated ghost bonus
-            float ghostBonus = plugin.GetCalibratedGhostBonus(_factionId, tile.GetX(), tile.GetZ());
+            float ghostBonus = plugin.GetCalibratedGhostBonus(_factionId, tileX, tileZ);
             if (ghostBonus > 0f)
             {
                 _tile.UtilityScore += ghostBonus;
                 _ghostHits++;
+            }
 
-                if (BooAPeekPlugin.DebugLogging && _ghostHits <= BooAPeekPlugin.DebugLogLimit)
-                    BooAPeekPlugin.Log.Msg($"[BooAPeek][GHOST] Tile ({tile.GetX()},{tile.GetZ()}): bonus +{ghostBonus:F1}, total Utility={_tile.UtilityScore:F2}");
+            // Track top tiles by utility (after ghost bonus)
+            if (BooAPeekPlugin.DebugLogging)
+            {
+                bool vis = false;
+                try { vis = _tile.IsVisibleToOpponentsHere; } catch { }
+
+                var info = new TileInfo
+                {
+                    X = tileX, Z = tileZ,
+                    Utility = _tile.UtilityScore,
+                    Safety = safety,
+                    Distance = distance,
+                    GhostBonus = ghostBonus,
+                    Visible = vis
+                };
+
+                if (_topTiles.Count < TOP_N)
+                {
+                    _topTiles.Add(info);
+                }
+                else
+                {
+                    // Replace lowest-utility entry if this one is higher
+                    int minIdx = 0;
+                    float minVal = _topTiles[0].Utility;
+                    for (int i = 1; i < _topTiles.Count; i++)
+                    {
+                        if (_topTiles[i].Utility < minVal)
+                        {
+                            minVal = _topTiles[i].Utility;
+                            minIdx = i;
+                        }
+                    }
+                    if (info.Utility > minVal)
+                        _topTiles[minIdx] = info;
+                }
             }
         }
         catch { }

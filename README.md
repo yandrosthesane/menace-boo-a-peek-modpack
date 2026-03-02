@@ -1,6 +1,6 @@
 # BooAPeek — Fixes AI Knowing about Concealed Player Units.
 
-**Version:** 2.0.0 — *"Under the Hood"*
+**Version:** 2.1.0 — *"I Saw You There"*
 **Author:** YandrosTheSane
 
 ## What It Does
@@ -29,6 +29,15 @@ On each AI unit's turn start (via Harmony prefix on `AIFaction.OnTurnStart`), Bo
 
 The filtering runs *before* the AI thinks, with guaranteed timing. The game naturally rebuilds `m_Opponents` at the start of the next turn, so no cleanup is needed.
 
+### Ghost Awareness (v2.1.0)
+
+When the AI loses line-of-sight on a previously spotted player unit, BooAPeek creates a "ghost" at the last-known position. This injects a bonus into the AI's tile scoring (via `ConsiderZones.Evaluate` postfix), nudging nearby enemies to investigate rather than instantly forgetting.
+
+- **Auto-calibrating bonus:** Scales to the spread of the AI's existing tile scores. Minimum floor of 20.0 ensures ghosts matter even in zoneless kill missions.
+- **Decay over time:** Ghost priority halves each round (3 rounds max), so the AI doesn't fixate forever.
+- **Cancellation on re-sight:** If any enemy spots the player again, the ghost is immediately cancelled.
+- **Per-unit tracking:** Each player unit is tracked independently — the AI can ghost one unit while actively engaging another.
+
 ### How the Leak Supposedly Works
 
 ```
@@ -47,6 +56,10 @@ Result:
 ```
 
 ## Changelog
+
+### v2.1.0 -- I Saw You There
+
+Ghost awareness system: AI investigates last-known player positions instead of instantly forgetting on LOS break. Auto-calibrating UtilityScore injection via ConsiderZones postfix, with spread-based scaling, per-round decay, and per-unit tracking. Codebase split into 6 concern-based files. [Design notes & test results](https://github.com/yandrosthesane/menace-boo-a-peek-modpack/blob/main/docs/v2.1.0_ghost_awareness.md)
 
 ### v2.0.0 -- Under the Hood
 
@@ -85,15 +98,20 @@ Use the https://github.com/p0ss/MenaceAssetPacker/releases to deploy (build the 
 
 It not yet satisfying but way better than before, no more herding.
 
-### What v2.0.0 Does NOT Do: Awareness Persistence
+### Awareness Persistence (v2.1.0)
 
-The current version is a **pure fog-of-war filter** — binary visible/invisible, evaluated fresh each turn. The system has no built-in awareness persistence:
+v2.0.0 was a pure binary filter — instant amnesia on LOS break. v2.1.0 adds ghost awareness:
 
-- **No TTL decay:** TTL is either refreshed by sighting or reset to -2 on list rebuild. It never naturally decays (2→1→0). We never observed natural decay because the leak kept enemies close enough to always re-spot.
-- **No last-known-position:** The only position data in `Opponent` is the live `Actor` reference. There is no snapshot of where a player was last seen.
-- **No faction memory:** Swapping the list causes total amnesia. I did not find something outside `m_Opponents`. I may be there but we're in the dark.
+- **Last-known-position tracking:** When a player unit is visible, its tile is recorded. When LOS breaks, a ghost is created at that position.
+- **UtilityScore injection:** Ghost zones boost nearby tiles by +20 (auto-calibrated minimum floor), nudging AI movement toward the last-seen position.
+- **Decay:** Ghost priority halves each round (20 → 10 → 5) over 3 rounds, then expires.
+- **Per-unit independence:** Each player unit is tracked separately — losing sight of one doesn't affect awareness of another.
 
-This means that once **all** enemies in a faction lose line-of-sight, the faction **instantly forgets** the player existed. An enemy that was actively chasing you will suddenly wander aimlessly next turn if it rounds a corner and loses LOS.
+### Remaining Limitations
+
+- **No faction-wide memory sharing:** Only the enemies that personally had LOS contribute to ghost creation. There is no "alert" propagation between units.
+- **No speculative fire:** The AI investigates but doesn't shoot at ghost positions (future work).
+- **Ghost bonus is movement-only:** Injected into UtilityScore, which drives tile selection. It does not affect combat decisions like target priority or ability usage.
 
 
 ## Settings
@@ -102,9 +120,16 @@ Configurable via the in-game Modkit settings panel:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| **Debug Logging** | Off | Logs actor counts and detailed init info |
+| **Debug Logging** | Off | Per-actor score ranges, top tiles, ghost zone diagnostics |
+| **Ghost Zone Size** | 5 | Width/height of the ghost influence zone (tiles) |
+| **Initial Priority** | 20 | Base ghost priority (pre-multiplied to survive first decay) |
+| **Decay Per Round** | 0.5 | Priority multiplier each round |
+| **Max Rounds** | 3 | Rounds before ghost expires |
+| **Waypoint Distance** | 6 | Max tiles the ghost waypoint advances toward nearest AI |
+| **Spread Fraction** | 0.33 | Ghost bonus as fraction of observed score spread |
+| **Minimum Bonus** | 20 | Floor for ghost bonus when spread is low/zero |
 
-Log output always includes turn transitions and filtering results (e.g. `"stripped 1 unseen opponent(s), kept 0"`).
+Log output always includes turn transitions and filtering results (e.g. `"Wildlife: stripped 1, kept 1, ghosts +1/-0"`).
 
 ## Investigation & Testing
 
@@ -146,18 +171,23 @@ Three runtime approaches were tested before arriving at the list swap:
 
 ```
 BooAPeek-modpack/
-├── modpack.json              # Mod metadata and load order
+├── modpack.json                      # Mod metadata and load order
 ├── src/
-│   └── BooAPeekPlugin.cs     # Plugin source (IModpackPlugin)
+│   ├── BooAPeekPlugin.cs             # Entry point, lifecycle, settings
+│   ├── KnowledgeState.cs             # Central awareness data + state transitions
+│   ├── OpponentFilter.cs             # LOS-based opponent stripping
+│   ├── AwarenessRecorder.cs          # Mid-move sighting, faction discovery
+│   ├── GhostResponse.cs              # Ghost waypoints, spread calibration
+│   └── Patches.cs                    # Harmony patches + score diagnostics
 ├── docs/
 │   ├── v1.1.1_AI_LEAK_ANALYSIS.md   # Full investigation with round-by-round evidence
 │   ├── v1.2.0_better_filtering.md   # Dynamic faction discovery design notes
 │   ├── v2.0.0_harmony_migration.md  # Harmony + direct Il2Cpp types migration
-│   └── README.bbcode.txt            # BBCode version for Nexus
-├── media/                    # Screenshots for Nexus (not in release zip)
-├── CHANGELOG.md              # Version history
-├── release.sh                # Build release zip
-└── README.md                 # This file
+│   └── v2.1.0_ghost_awareness.md    # Ghost awareness design + test results
+├── media/                            # Screenshots for Nexus (not in release zip)
+├── CHANGELOG.md                      # Version history
+├── release.sh                        # Build release zip
+└── README.md                         # This file
 ```
 
 ## Credits

@@ -9,7 +9,12 @@
   "assets": {},
   "code": {
     "sources": [
-      "src/BooAPeekPlugin.cs"
+      "src/BooAPeekPlugin.cs",
+      "src/KnowledgeState.cs",
+      "src/OpponentFilter.cs",
+      "src/AwarenessRecorder.cs",
+      "src/GhostResponse.cs",
+      "src/Patches.cs"
     ],
     "references": [
       "MelonLoader",

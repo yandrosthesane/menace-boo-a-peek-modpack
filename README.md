@@ -1,31 +1,33 @@
 # BooAPeek — AI Awareness Rework for Menace
 
-**Version:** 2.1.0 — *"I Saw You There"*
+**Version:** 2.2.0 — *"Equal Opportunity Paranoia"*
 **Author:** YandrosTheSane
 
 ## What It Does
 
-BooAPeek reworks the AI's awareness of player units in Menace's tactical combat.
+BooAPeek reworks the AI's awareness of opponents in Menace's tactical combat.
 
-The vanilla game gives every AI faction full knowledge of all player positions at mission start and relies on the AI to behave as if it doesn't know. 
-BooAPeek takes a different approach: it strips opponent knowledge and rebuilds it based on what each faction can actually observe through line-of-sight. 
+The vanilla game gives every AI faction full knowledge of all opponent positions at mission start and relies on the AI to behave as if it doesn't know.
+BooAPeek takes a different approach: it strips opponent knowledge and rebuilds it based on what each faction can actually observe through line-of-sight.
 
-When enemies lose sight of a player unit, they investigate the last-known position instead of instantly forgetting.
+When enemies lose sight of any opponent — player units, civilians, or allies — they investigate the last-known position instead of instantly forgetting.
 
 
 ## High level features overview
 
-### Ghost Awareness (v2.1.0)
+### Ghost Awareness (v2.1.0, expanded in v2.2.0)
 
-When the AI loses line-of-sight on a previously spotted player unit, BooAPeek creates a "ghost" at the last-known position. 
+When the AI loses line-of-sight on a previously spotted opponent, BooAPeek creates a "ghost" at the last-known position.
 
 This injects a bonus into the AI's tile scoring (via `ConsiderZones.Evaluate` postfix), nudging nearby enemies to investigate rather than instantly forgetting.
 
+As of v2.2.0, ghost pursuit covers **all non-hostile factions** — player units, civilians, and allies alike. Previously only player units triggered ghost creation; now wildlife will investigate a civilian that ducked behind cover just as it would a player unit.
+
 - **Auto-calibrating bonus:** Scales to the spread of the AI's existing tile scores. Minimum floor of 20.0 ensures ghosts matter even in zoneless kill missions.
-  - Objectives based missions have not yet been balanced, but utility values observes were up to 10000 so our meagre influence shouldn't be felt too much
+  - Objectives based missions have not yet been balanced, but utility values observed were up to 10000 so our meagre influence shouldn't be felt too much
 - **Decay over time:** Ghost priority halves each round (3 rounds max), so the AI doesn't fixate forever.
-- **Cancellation on re-sight:** If any enemy spots the player again, the ghost is immediately cancelled.
-- **Per-unit tracking:** Each player unit is tracked independently — the AI can ghost one unit while actively engaging another.
+- **Cancellation on re-sight:** If any enemy spots the opponent again, the ghost is immediately cancelled.
+- **Per-unit tracking:** Each opponent is tracked independently — the AI can ghost one unit while actively engaging another.
 - **Waypoint advancement:** Ghost position advances toward the nearest AI unit each round, guiding investigation movement.
 
 ### Opponent List Filtering (v1.x)
@@ -61,9 +63,13 @@ Log output should includes turn transitions and filtering results (e.g. `"Wildli
 
 ## Changelog
 
+### v2.2.0 -- Equal Opportunity Paranoia
+
+Ghost pursuit and awareness tracking now cover all non-hostile factions — civilians, allies, and player units. Previously the AI only ghosted player units on LOS break; now any opponent that disappears triggers investigation.
+
 ### v2.1.0 -- I Saw You There
 
-Ghost awareness system: AI investigates last-known player positions instead of instantly forgetting on LOS break. Auto-calibrating UtilityScore injection via ConsiderZones postfix, with spread-based scaling, per-round decay, and per-unit tracking. Codebase split into 6 concern-based files. [Design notes & test results](https://github.com/yandrosthesane/menace-boo-a-peek-modpack/blob/main/docs/v2.1.0_ghost_awareness.md)
+Ghost awareness system: AI investigates last-known opponent positions instead of instantly forgetting on LOS break. Auto-calibrating UtilityScore injection via ConsiderZones postfix, with spread-based scaling, per-round decay, and per-unit tracking. Codebase split into 6 concern-based files. [Design notes & test results](https://github.com/yandrosthesane/menace-boo-a-peek-modpack/blob/main/docs/v2.1.0_ghost_awareness.md)
 
 ### v2.0.0 -- Under the Hood
 

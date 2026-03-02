@@ -11,7 +11,7 @@ public partial class BooAPeekPlugin
 
     private class GhostMemory
     {
-        public int TargetX, TargetZ;     // Last-seen player position
+        public int TargetX, TargetZ;     // Last-seen opponent position
         public int WaypointX, WaypointZ; // Current waypoint (between AI and target)
         public int RoundsRemaining;
         public float Priority;
@@ -46,7 +46,7 @@ public partial class BooAPeekPlugin
     }
 
     /// <summary>
-    /// Record that a player unit is visible at (x, z) to the given faction.
+    /// Record that an opponent is visible at (x, z) to the given faction.
     /// Returns true if an active ghost was cancelled (re-sighted).
     /// </summary>
     private bool RecordSighting(int factionIdx, IntPtr actorPtr, int x, int z)
@@ -63,7 +63,7 @@ public partial class BooAPeekPlugin
     }
 
     /// <summary>
-    /// Record that a player unit has broken LOS with the given faction.
+    /// Record that an opponent has broken LOS with the given faction.
     /// Creates a ghost from LastSeen if tracked and no ghost exists.
     /// Returns the ghost if one was created, null otherwise.
     /// </summary>

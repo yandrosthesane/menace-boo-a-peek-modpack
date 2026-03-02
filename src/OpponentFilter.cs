@@ -47,22 +47,12 @@ public partial class BooAPeekPlugin
                     }
                 }
 
-                // Only track awareness for player faction opponents
-                bool isPlayerUnit = false;
-                try
-                {
-                    var actorEntity = new Entity(actor.Pointer);
-                    int actorFaction = actorEntity.GetFactionID();
-                    isPlayerUnit = PlayerFactions.Contains(actorFaction);
-                }
-                catch { }
-
                 if (isVisible)
                 {
                     filtered.Add(opponent);
                     kept++;
 
-                    if (isPlayerUnit)
+                    try
                     {
                         var entity = new Entity(actor.Pointer);
                         var tile = entity.GetTile();
@@ -72,23 +62,21 @@ public partial class BooAPeekPlugin
                             if (ghostCancelled)
                             {
                                 ghostsRemoved++;
-                                Log.Msg($"[BooAPeek] Ghost cancelled — player re-sighted");
+                                Log.Msg($"[BooAPeek] Ghost cancelled — opponent re-sighted");
                             }
                         }
                     }
+                    catch { }
                 }
                 else
                 {
                     stripped++;
 
-                    if (isPlayerUnit)
+                    var ghost = RecordLOSLost(factionIdx, actor.Pointer);
+                    if (ghost != null)
                     {
-                        var ghost = RecordLOSLost(factionIdx, actor.Pointer);
-                        if (ghost != null)
-                        {
-                            ghostsCreated++;
-                            Log.Msg($"[BooAPeek] Ghost pursuit started → target ({ghost.TargetX},{ghost.TargetZ}), priority {ghost.Priority}, {ghost.RoundsRemaining} rounds");
-                        }
+                        ghostsCreated++;
+                        Log.Msg($"[BooAPeek] Ghost pursuit started → target ({ghost.TargetX},{ghost.TargetZ}), priority {ghost.Priority}, {ghost.RoundsRemaining} rounds");
                     }
                 }
             }

@@ -15,20 +15,22 @@ public partial class BooAPeekPlugin
 
     /// <summary>
     /// Called from SetTile patch when any entity changes tile.
-    /// If a player unit moved into hostile AI vision, record the sighting.
+    /// If the entity moved into hostile AI vision, record the sighting.
     /// </summary>
     internal void OnEntityTileChanged(Entity entity)
     {
         try
         {
             int entityFaction = entity.GetFactionID();
-            if (!PlayerFactions.Contains(entityFaction)) return;
+            // Skip hostile AI factions — we only track targets, not the AI's own units
+            if (HostileAiFactions.Contains(entityFaction)) return;
 
             var tile = entity.GetTile();
             if (tile == null) return;
             int x = tile.GetX(), z = tile.GetZ();
 
-            var playerObj = new GameObj(entity.Pointer);
+            var targetObj = new GameObj(entity.Pointer);
+            bool isPlayer = PlayerFactions.Contains(entityFaction);
 
             foreach (int hostileFaction in HostileAiFactions)
             {
@@ -36,7 +38,7 @@ public partial class BooAPeekPlugin
                 bool seen = false;
                 foreach (var enemy in enemies)
                 {
-                    if (LineOfSight.CanActorSee(enemy, playerObj))
+                    if (LineOfSight.CanActorSee(enemy, targetObj))
                     {
                         seen = true;
                         break;
@@ -49,7 +51,10 @@ public partial class BooAPeekPlugin
                     var prev = awareness.LastSeen.ContainsKey(entity.Pointer);
                     awareness.LastSeen[entity.Pointer] = (x, z);
                     if (!prev)
-                        Log.Msg($"[BooAPeek] Player unit spotted mid-move at ({x},{z}) by faction {hostileFaction}");
+                    {
+                        string tag = isPlayer ? "Player unit" : "NPC";
+                        Log.Msg($"[BooAPeek] {tag} spotted mid-move at ({x},{z}) by faction {hostileFaction}");
+                    }
                 }
             }
         }

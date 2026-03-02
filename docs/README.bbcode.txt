@@ -1,53 +1,73 @@
-[size=5][b]BooAPeek — Fixes AI Knowing about Concealed Player Units[/b][/size]
+[size=5][b]BooAPeek — AI Awareness Rework for Menace[/b][/size]
 
-[b]Version:[/b] 1.2.0 — [i]"Who Goes There?"[/i]
+[b]Version:[/b] 2.1.0 — [i]"I Saw You There"[/i]
 [b]Author:[/b] YandrosTheSane
 
 [size=4][b]What It Does[/b][/size]
 
-BooAPeek tries to fix a fundamental AI information leak in Menace's tactical combat. Without this mod, the AI knows the exact real-time position of all player units — even concealed ones it has never seen — and uses that knowledge to flee, take cover, and position optimally against invisible threats.
+BooAPeek reworks the AI's awareness of player units in Menace's tactical combat.
 
-[size=4][b]The Problem[/b][/size]
+The vanilla game gives every AI faction full knowledge of all player positions at mission start and relies on the AI to behave as if it doesn't know.
+BooAPeek takes a different approach: it strips opponent knowledge and rebuilds it based on what each faction can actually observe through line-of-sight.
 
-At mission start, the game pre-populates every AI faction's opponent list with [b]all[/b] player units, each containing a live reference to the actual unit object. The AI's tile scoring system reads opponent positions from this list to evaluate threat, cover, and flee calculations — but [b]never checks whether the opponent is known[/b] before doing so.
+When enemies lose sight of a player unit, they investigate the last-knownclaud position instead of instantly forgetting.
 
-The result: enemies react to concealed player units they have zero legitimate knowledge of.
+[size=4][b]High Level Features Overview[/b][/size]
 
-They flee from unseen threats, freeze behind high-cover tiles relative to invisible positions, and optimally reposition against ghosts causing the well known "herding" pattern.
+[size=3][b]Ghost Awareness (v2.1.0)[/b][/size]
 
-[size=4][b]How It Currently Works[/b][/size]
+When the AI loses line-of-sight on a previously spotted player unit, BooAPeek creates a "ghost" at the last-known position.
 
-[size=3][b]Core Mechanism: Opponent List Filtering[/b][/size]
+This injects a bonus into the AI's tile scoring (via ConsiderZones.Evaluate postfix), nudging nearby enemies to investigate rather than instantly forgetting.
 
-On each AI faction's turn start, BooAPeek:
+[list]
+[*][b]Auto-calibrating bonus:[/b] Scales to the spread of the AI's existing tile scores. Minimum floor of 20.0 ensures ghosts matter even in zoneless kill missions.
+  Objectives based missions have not yet been balanced, but utility values observed were up to 10000 so our meagre influence shouldn't be felt too much.
+[*][b]Decay over time:[/b] Ghost priority halves each round (3 rounds max), so the AI doesn't fixate forever.
+[*][b]Cancellation on re-sight:[/b] If any enemy spots the player again, the ghost is immediately cancelled.
+[*][b]Per-unit tracking:[/b] Each player unit is tracked independently — the AI can ghost one unit while actively engaging another.
+[*][b]Waypoint advancement:[/b] Ghost position advances toward the nearest AI unit each round, guiding investigation movement.
+[/list]
+
+[size=3][b]Opponent List Filtering (v1.x)[/b][/size]
+
+On each AI unit's turn start, BooAPeek:
 
 [list=1]
-[*]Gets the faction's opponent list via reflection
+[*]Gets the faction's opponent list directly
 [*]For each opponent, checks if [b]any[/b] living enemy in that faction has line-of-sight to that player unit
 [*]Builds a new list containing only opponents that are actually visible
 [*]Swaps the opponent list to the filtered list
 [/list]
 
-The AI's tile scorer then sees only legitimately visible opponents. The game naturally rebuilds the list at the start of the next turn, so no cleanup is needed.
+The filtering runs before the AI thinks, with guaranteed timing. The game naturally rebuilds the opponent list at the start of the next turn, so no cleanup is needed.
 
-[size=3][b]How the Leak Supposedly Works[/b][/size]
+[size=4][b]Settings[/b][/size]
 
-[code]
-Mission Start:
-  Opponents populated with ALL player units
-  Each entry: Actor = live reference, TTL = -2, IsKnown = False
+Configurable via the in-game Modkit settings panel:
 
-During AI Turn (Think / tile scoring):
-  Tile scorer reads each opponent's position for EVERY opponent
-  → Gets player's CURRENT real-time position
-  → Never checks IsKnown() or TTL
-  → Evaluates threat/cover/flee against that position
+I haven't had the time to play with those, feel free to experiment and report :)
 
-Result:
-  AI reacts to concealed units it has never seen
-[/code]
+[list]
+[*][b]Debug Logging[/b] (Default: Off) — Per-actor score ranges, top tiles, ghost zone diagnostics
+[*][b]Ghost Zone Size[/b] (Default: 5) — Width/height of the ghost influence zone (tiles)
+[*][b]Initial Priority[/b] (Default: 20) — Base ghost priority (pre-multiplied to survive first decay)
+[*][b]Decay Per Round[/b] (Default: 0.5) — Priority multiplier each round
+[*][b]Max Rounds[/b] (Default: 3) — Rounds before ghost expires
+[*][b]Waypoint Distance[/b] (Default: 6) — Max tiles the ghost waypoint advances toward nearest AI
+[*][b]Spread Fraction[/b] (Default: 0.33) — Ghost bonus as fraction of observed score spread
+[*][b]Minimum Bonus[/b] (Default: 20) — Floor for ghost bonus when spread is low/zero
+[/list]
+
+Log output should include turn transitions and filtering results (e.g. "Wildlife: stripped 1, kept 1, ghosts +1/-0").
 
 [size=4][b]Changelog[/b][/size]
+
+[size=3][b]v2.1.0 -- I Saw You There[/b][/size]
+Ghost awareness system: AI investigates last-known player positions instead of instantly forgetting on LOS break. Auto-calibrating UtilityScore injection via ConsiderZones postfix, with spread-based scaling, per-round decay, and per-unit tracking. Codebase split into 6 concern-based files. [url=https://github.com/yandrosthesane/menace-boo-a-peek-modpack/blob/main/docs/v2.1.0_ghost_awareness.md]Design notes & test results[/url]
+
+[size=3][b]v2.0.0 -- Under the Hood[/b][/size]
+Complete architecture rewrite: direct Il2Cpp types + Harmony OnTurnStart prefix replaces reflection + frame polling. Same filtering logic, guaranteed timing, zero per-frame overhead. [url=https://github.com/yandrosthesane/menace-boo-a-peek-modpack/blob/main/docs/v2.0.0_harmony_migration.md]Migration details[/url]
 
 [size=3][b]v1.2.0 -- Who Goes There?[/b][/size]
 Factions are now discovered at runtime instead of hardcoded. Allied AI factions (Civilian, Allied Local Forces) are correctly skipped — v1.1.x incorrectly stripped their opponents too. [url=https://github.com/yandrosthesane/menace-boo-a-peek-modpack/blob/main/docs/v1.2.0_better_filtering.md]Design notes & analysis[/url]
@@ -56,62 +76,53 @@ Factions are now discovered at runtime instead of hardcoded. Allied AI factions 
 Settings cleanup, release tooling, documentation.
 
 [size=3][b]v1.1.0 -- Opponent List Filtering[/b][/size]
-Core fog-of-war fix: on each AI faction's turn, filters the opponent list to only include player units visible to at least one living enemy in that faction. Pure binary filter — no awareness persistence, no TTL decay, no last-known-position. [url=https://github.com/yandrosthesane/menace-boo-a-peek-modpack/blob/main/docs/v1.1.1_AI_LEAK_ANALYSIS.md]Investigation & analysis[/url]
+Core fog-of-war rework: on each AI faction's turn, filters the opponent list to only include player units visible to at least one living enemy in that faction. Pure binary filter — no awareness persistence, no TTL decay, no last-known-position. [url=https://github.com/yandrosthesane/menace-boo-a-peek-modpack/blob/main/docs/v1.1.1_AI_LEAK_ANALYSIS.md]Investigation & analysis[/url]
+
+[size=4][b]Background: The AI Information Leak (v1.x Investigation)[/b][/size]
+
+This section documents the original investigation that motivated BooAPeek's awareness rework.
+
+[size=3][b]The Problem[/b][/size]
+
+At mission start, the game pre-populates every AI faction's opponent list with [b]all[/b] player units, each containing a live reference to the actual unit object. The AI's tile scoring system reads opponent positions from this list to evaluate threat, cover, and flee calculations — but [b]never checks whether the opponent is known[/b] before doing so.
+
+The result: enemies react to concealed player units they have zero legitimate knowledge of. They flee from unseen threats, freeze behind high-cover tiles relative to invisible positions, and optimally reposition against ghosts causing the well known "herding" pattern.
+
+[size=3][b]Confirming the Leak[/b][/size]
+
+Tested with a concealed player unit (Concealment=3) against 26 pirates across 12 rounds, using live REPL inspection of AI state at each turn boundary. Full round-by-round data, position tables, and architecture notes in [url=https://github.com/yandrosthesane/menace-boo-a-peek-modpack/blob/main/docs/v1.1.1_AI_LEAK_ANALYSIS.md]v1.1.1_AI_LEAK_ANALYSIS.md[/url].
+
+With the leak active, enemies unanimously flee from a concealed unit they have never seen — even when all gating fields (TTL=-2, IsKnown=False, Assessment=zeros) confirm "unknown." At close range, enemies take optimal cover positions relative to the player's exact live position despite zero LOS.
+
+[size=3][b]Ruled-Out Approaches[/b][/size]
+
+Three runtime approaches were tested before arriving at the list swap:
+
+[list]
+[*][b]Set TTL=0[/b] — Makes IsKnown=True — worse, not better
+[*][b]Clear list size to 0[/b] — Game rebuilds the list mid-turn before AI thinks
+[*][b]Null the Actor reference[/b] — Game freeze — native code has no null checks
+[/list]
+
+[size=3][b]Validation (4 Controlled Tests)[/b][/size]
+
+[list]
+[*][b]Baseline[/b] (26 enemies, no contact) — Normal patrol — random movement, no coordinated fleeing
+[*][b]Close proximity[/b] (2 enemies at distance 5) — One walked straight into the player (d=5→2), the other patrolled away. Zero awareness.
+[*][b]TTL lifecycle[/b] (Enemy spots player, then list swapped) — Complete amnesia — TTL=-2, Threat=0 after swap. No persistence outside opponent list.
+[*][b]Before/after[/b] (Same enemies, same position, leak on then off) — Enemy that fled +5.6 over 2 turns reversed direction (-1.0 toward) immediately after swap.
+[/list]
 
 [size=4][b]Complementary Mods[/b][/size]
 
 [list]
-[*][url=https://www.nexusmods.com/menace/mods/69]PeekABoo ~ By YandrosTheSane[/url] — Fixes the mirror-image problem: the player's illegitimate knowledge of hidden enemy positions via the concealment icon.
 [*][url=https://www.nexusmods.com/menace/mods/36]Wake Up ~ By Pylkij[/url]
+[*][url=https://www.nexusmods.com/menace/mods/69]PeekABoo ~ By YandrosTheSane[/url]
 [/list]
-
-With those 3 mods (AI is active, You don't get free intel, They don't get free intel) you can get into situation like this in one turn.
-
-Later down the road there will be a need for rebalance.
 
 [size=4][b]Installation[/b][/size]
 
 Use the [url=https://github.com/p0ss/MenaceAssetPacker/releases]MenaceAssetPacker[/url] to deploy (build the sources) and activate the mod.
-
-[size=4][b]Current State & Known Limitations[/b][/size]
-
-[size=3][b]What v1.2.0 Does (Supposedly) Well[/b][/size]
-
-(at the time of release I have played legitimately 5 full operations with the mods above and feel very confident about it being a better player experience)
-
-[list]
-[*]Eliminates the AI's illegitimate knowledge of concealed player positions
-[*]Enemies behave more naturally when they haven't spotted you: patrolling, wandering, even walking past or into you.
-[*]When enemies do have LOS, they react normally (opponent stays in the list)
-[*]Zero gameplay impact outside of fog-of-war — no behavior changes for visible encounters
-[*]Stable across all tested scenarios — no crashes, no freezes, no list corruption
-[/list]
-
-It's not yet satisfying but way better than before, no more herding.
-
-[size=3][b]What v1.2.0 Does NOT Do: Awareness Persistence[/b][/size]
-
-The current version is a [b]pure fog-of-war filter[/b] — binary visible/invisible, evaluated fresh each turn. The system has no built-in awareness persistence:
-
-[list]
-[*][b]No TTL decay:[/b] TTL is either refreshed by sighting or reset to -2 on list rebuild. It never naturally decays. We never observed natural decay because the leak kept enemies close enough to always re-spot.
-[*][b]No last-known-position:[/b] The only position data in the opponent entry is the live actor reference. There is no snapshot of where a player was last seen.
-[*][b]No faction memory:[/b] Swapping the list causes total amnesia. I did not find anything outside the opponent list. It may be there but we're in the dark.
-[/list]
-
-This means that once [b]all[/b] enemies in a faction lose line-of-sight, the faction [b]instantly forgets[/b] the player existed. An enemy that was actively chasing you will suddenly wander aimlessly next turn if it rounds a corner and loses LOS.
-
-[size=4][b]Settings[/b][/size]
-
-Configurable via the in-game Modkit settings panel:
-
-[list]
-[*][b]Debug Logging[/b] (Default: Off) — Logs actor counts and detailed init info
-[/list]
-
-The settings header shows the mod version (e.g. "BooAPeek v1.2.0") so you can verify which version is deployed.
-
-Log output always includes turn transitions and filtering results (e.g. "stripped 1 unseen opponent(s), kept 0").
 
 [size=4][b]Credits[/b][/size]
 

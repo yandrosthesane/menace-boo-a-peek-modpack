@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.2.0 -- Equal Opportunity Paranoia
+
+Ghost pursuit and awareness tracking now cover **all non-hostile factions** — civilians, allies, and player units alike. Previously the AI only created ghosts for player units that broke LOS; now any opponent that disappears triggers investigation.
+
+### Changed
+
+- **AwarenessRecorder:** `OnEntityTileChanged` tracks all non-hostile entities, not just player faction. Hostile AI's own units are skipped to avoid self-tracking.
+- **OpponentFilter:** Removed `isPlayerUnit` guard from ghost creation and cancellation. Any opponent breaking LOS can spawn a ghost; any re-sighted opponent cancels its ghost.
+- **KnowledgeState:** Terminology updated (player → opponent) to reflect broader scope.
+
+### Why
+
+During wildlife-vs-civilian movement analysis, we found that AI wildlife ignored civilians that ducked behind cover — it only ghosted player units. Since the ghost system makes AI behavior more realistic for *all* opponent types, the player-only restriction was unnecessary.
+
 ## v2.1.0 -- I Saw You There
 
 Ghost awareness system: AI investigates last-known player positions instead of instantly forgetting on LOS break.
@@ -65,6 +79,6 @@ Settings cleanup, release tooling, documentation.
 
 ## v1.1.0 -- Opponent List Filtering
 
-Core fog-of-war fix: on each AI faction's turn, filters `m_Opponents` to only include player units visible to at least one living enemy in that faction. Pure binary filter — no awareness persistence, no TTL decay, no last-known-position.
+Core fog-of-war rework: on each AI faction's turn, filters `m_Opponents` to only include player units visible to at least one living enemy in that faction. Pure binary filter — no awareness persistence, no TTL decay, no last-known-position.
 
 [Investigation & analysis](https://github.com/yandrosthesane/menace-boo-a-peek-modpack/blob/main/docs/v1.1.1_AI_LEAK_ANALYSIS.md)

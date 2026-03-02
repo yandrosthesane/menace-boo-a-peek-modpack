@@ -21,7 +21,7 @@ public partial class BooAPeekPlugin : IModpackPlugin
     private bool _ready;
 
     private const string MOD_NAME = "BooAPeek";
-    private const string MOD_VERSION = "2.1.0";
+    private const string MOD_VERSION = "2.2.0";
     private const int FACTION_PROBE_MAX = 15;
 
     // Faction classification (discovered per mission)
